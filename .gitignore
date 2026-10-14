@@ -1,0 +1,35 @@
+# PlatformIO build output and IDE integration
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+.clang_complete
+.gcc-flags.json
+compile_commands.json
+
+# ESP-IDF generated config: sdkconfig.defaults is the source of truth,
+# the per-environment sdkconfig is regenerated from it on build.
+firmware/sdkconfig.*
+!firmware/sdkconfig.defaults
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+firmware/dependencies.lock
+
+# Host test build products (make -C firmware/test/host)
+firmware/test/host/test_decoder
+firmware/test/host/ui_preview
+firmware/test/host/*.pgm
+firmware/test/host/shots/
+
+# Local flash backup of the original firmware (kept out of git)
+backup/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Editors / OS
+*.swp
+*~
+.DS_Store

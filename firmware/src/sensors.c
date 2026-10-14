@@ -1,0 +1,85 @@
+#include "sensors.h"
+
+#include <string.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
+static sensor_entry_t s_tab[SENSORS_MAX];
+static int s_count;
+static uint32_t s_gen;
+static SemaphoreHandle_t s_lock;
+
+void sensors_init(void)
+{
+    s_lock = xSemaphoreCreateMutex();
+}
+
+bool sensors_add(const tpms_ford_t *pkt, int rssi_dbm, uint32_t ms)
+{
+    bool new_burst = true;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    sensor_entry_t *e = NULL;
+    for (int i = 0; i < s_count; i++) {
+        if (s_tab[i].pkt.id == pkt->id) {
+            e = &s_tab[i];
+            break;
+        }
+    }
+    if (!e) {
+        if (s_count < SENSORS_MAX) {
+            e = &s_tab[s_count++];
+        } else {
+            /* Evict the least recently heard ID. */
+            e = &s_tab[0];
+            for (int i = 1; i < s_count; i++)
+                if (s_tab[i].last_ms < e->last_ms) e = &s_tab[i];
+        }
+        memset(e, 0, sizeof(*e));
+        e->first_ms = ms;
+    } else if (e->packets && ms - e->last_ms < SENSORS_BURST_GAP_MS) {
+        new_burst = false;
+    }
+
+    e->pkt = *pkt;
+    e->rssi_dbm = (int16_t)rssi_dbm;
+    if (new_burst || rssi_dbm > e->rssi_best_dbm) e->rssi_best_dbm = (int16_t)rssi_dbm;
+    e->last_ms = ms;
+    e->packets++;
+    if (new_burst) {
+        e->bursts++;
+        s_gen++;
+    }
+    xSemaphoreGive(s_lock);
+    return new_burst;
+}
+
+int sensors_snapshot(sensor_entry_t *out, int max)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int n = 0;
+    bool used[SENSORS_MAX] = {0};
+    /* Selection sort by last_ms, newest first (n <= 20). */
+    while (n < max && n < s_count) {
+        int best = -1;
+        for (int i = 0; i < s_count; i++)
+            if (!used[i] && (best < 0 || s_tab[i].last_ms > s_tab[best].last_ms)) best = i;
+        used[best] = true;
+        out[n++] = s_tab[best];
+    }
+    xSemaphoreGive(s_lock);
+    return n;
+}
+
+uint32_t sensors_generation(void)
+{
+    return s_gen;
+}
+
+void sensors_clear(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_count = 0;
+    s_gen++;
+    xSemaphoreGive(s_lock);
+}
