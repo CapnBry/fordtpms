@@ -5,14 +5,24 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "battery";
 static adc_oneshot_unit_handle_t s_adc;
 static adc_cali_handle_t s_cali;
 static adc_channel_t s_chan;
+/* Readers: display, CLI and web UI. Cached so they don't hammer the ADC. */
+static SemaphoreHandle_t s_lock;
+static int s_cached_mv = -1;
+static int64_t s_cached_us;
+
+#define BATTERY_CACHE_US (1000 * 1000)
 
 void battery_init(void)
 {
+    s_lock = xSemaphoreCreateMutex();
     adc_unit_t unit;
     if (adc_oneshot_io_to_channel(PIN_BATT_ADC, &unit, &s_chan) != ESP_OK) return;
     adc_oneshot_unit_init_cfg_t ucfg = {.unit_id = unit};
@@ -37,6 +47,13 @@ void battery_init(void)
 int battery_read_mv(void)
 {
     if (!s_adc) return -1;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int64_t now = esp_timer_get_time();
+    if (s_cached_mv >= 0 && now - s_cached_us < BATTERY_CACHE_US) {
+        int mv = s_cached_mv;
+        xSemaphoreGive(s_lock);
+        return mv;
+    }
     int sum = 0;
     for (int i = 0; i < 8; i++) {
         int raw = 0, mv = 0;
@@ -45,5 +62,9 @@ int battery_read_mv(void)
         else mv = raw * 3300 / 4095;
         sum += mv;
     }
-    return sum / 8 * BATT_DIVIDER;
+    s_cached_mv = sum / 8 * BATT_DIVIDER;
+    s_cached_us = now;
+    int mv = s_cached_mv;
+    xSemaphoreGive(s_lock);
+    return mv;
 }

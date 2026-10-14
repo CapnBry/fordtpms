@@ -54,7 +54,7 @@ transmission, and for 5 s per sensor during the rotation.
 | Area | Content |
 |---|---|
 | Top left | `ID` sensor ID (8 hex digits, as in rtl_433) |
-| Top right | `#n`: number of transmissions (bursts) received from this ID. A sensor repeats each reading about 4 times; the repeats count as one |
+| Top right | `#n`: number of transmissions (bursts) received from this ID. A sensor repeats each reading about 4 times; the repeats count as one. If the ID is assigned to a wheel, the wheel comes first, e.g. `FR #12` |
 | Big digits | Pressure in **PSI**, rounded to 0.1. At 100 PSI and above, whole PSI are shown (see the learn example below) |
 | `TMP` | Temperature in °C, or `--` when this packet's temperature byte isn't a temperature (bit 0x80 set) |
 | `KPA` | Pressure in kPa |
@@ -95,10 +95,41 @@ bit (flag 0x20) and are shown as whole PSI. An invalid temperature shows `--`.
 
 ## Overview screen
 
-The four most recently heard sensors around a top-down car. Ford packets
-don't say which wheel a sensor is on, so the corners are simply filled
+A top-down car with a sensor in each corner. Ford packets don't say which
+wheel a sensor is on, so what the corners show depends on whether you have
+assigned IDs to wheels (web UI Tire Positions panel, or the `tires` CLI command).
+
+**No wheels assigned:** the four most recently heard sensors, filled
 newest-first: top-left, top-right, bottom-left, bottom-right. A corner with no
 sensor shows `---`.
+
+![Overview screen](images/overview.png)
+
+Each corner shows the pressure in PSI. Under it is a line that alternates every 4 s:
+
+- the last 4 hex digits of the sensor ID and the time since it was last heard (above)
+- the temperature and `MOV` if the sensor is moving. Without a valid
+  temperature, the ID is shown instead (below, bottom-left)
+
+![Overview screen, alternate line](images/overview_alt.png)
+
+**At least one wheel assigned:** each corner is its wheel: front left,
+front right, rear left, rear right. Sensors that aren't assigned don't appear
+here, but they still get detail screens in the rotation.
+
+| Corner shows | Meaning |
+|---|---|
+| Pressure and the same alternating line as above | Assigned and heard since boot |
+| `--.-` PSI and the ID's last 4 hex digits with a blinking `WAIT` | Assigned but not heard since boot (parked sensors transmit only about every 6 h) |
+| `---` | No sensor assigned to this wheel |
+
+![Overview screen with wheels assigned](images/overview_wheels.png)
+
+The detail screen of an assigned sensor shows its wheel in the header:
+
+![Detail screen of an assigned sensor](images/detail_wheel.png)
+
+---`.
 
 ![Overview screen](images/overview.png)
 

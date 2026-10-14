@@ -164,7 +164,8 @@ void ui_render_detail(gfx_t *g, const ui_model_t *m, const ui_sensor_t *s, uint3
     /* Header: ID and packet counter */
     snprintf(buf, sizeof(buf), "ID %08X", (unsigned)s->id);
     gfx_text(g, 0, 0, buf, 1);
-    snprintf(buf, sizeof(buf), "#%u", (unsigned)s->count);
+    static const char *const wheel_names[] = {"", "FL ", "FR ", "RL ", "RR "};
+    snprintf(buf, sizeof(buf), "%s#%u", s->wheel <= 4 ? wheel_names[s->wheel] : "", (unsigned)s->count);
     gfx_text(g, W - gfx_text_width(buf, 1), 0, buf, 1);
     gfx_hline_dotted(g, 0, 9, W, 2);
 
@@ -209,27 +210,53 @@ void ui_render_detail(gfx_t *g, const ui_model_t *m, const ui_sensor_t *s, uint3
 
 /* ------------------------------------------------------------ overview -- */
 
+/* 1982 Pontiac Trans Am from above, nose up (same car as the web UI). */
 static void draw_car(gfx_t *g, int cx, int y, int h)
 {
-    int bw = 20, x = cx - bw / 2;
-    /* Body with tapered nose and tail */
-    gfx_line(g, x + 3, y, x + bw - 4, y);
-    gfx_line(g, x + 3, y, x, y + 5);
-    gfx_line(g, x + bw - 4, y, x + bw - 1, y + 5);
-    gfx_vline(g, x, y + 5, h - 9);
-    gfx_vline(g, x + bw - 1, y + 5, h - 9);
-    gfx_line(g, x, y + h - 4, x + 3, y + h - 1);
-    gfx_line(g, x + bw - 1, y + h - 4, x + bw - 4, y + h - 1);
+    int bw = 20, x = cx - bw / 2, r = x + bw - 1;
+    /* Body: wedge nose, rounded tail */
+    gfx_hline(g, x + 7, y, 6);
+    gfx_line(g, x + 6, y, x + 2, y + 2);
+    gfx_line(g, r - 6, y, r - 2, y + 2);
+    gfx_line(g, x + 1, y + 3, x, y + 5);
+    gfx_line(g, r - 1, y + 3, r, y + 5);
+    gfx_vline(g, x, y + 5, h - 8);
+    gfx_vline(g, r, y + 5, h - 8);
+    gfx_line(g, x, y + h - 3, x + 2, y + h - 1);
+    gfx_line(g, r, y + h - 3, r - 2, y + h - 1);
     gfx_hline(g, x + 3, y + h - 1, bw - 6);
-    /* Windshield, roof, rear glass */
-    gfx_line(g, x + 3, y + 14, x + bw - 4, y + 14);
-    gfx_line(g, x + 3, y + 14, x + 5, y + 18);
-    gfx_line(g, x + bw - 4, y + 14, x + bw - 6, y + 18);
-    gfx_rect(g, x + 5, y + 18, bw - 10, h - 32);
-    gfx_line(g, x + 5, y + h - 14, x + 3, y + h - 10);
-    gfx_line(g, x + bw - 6, y + h - 14, x + bw - 4, y + h - 10);
+    /* Pop-up headlight doors */
+    gfx_hline(g, x + 2, y + 4, 3);
+    gfx_hline(g, r - 4, y + 4, 3);
+    /* Hood bulge with twin scoops */
+    gfx_hline(g, x + 7, y + 4, 6);
+    gfx_line(g, x + 7, y + 4, x + 6, y + 19);
+    gfx_line(g, r - 7, y + 4, r - 6, y + 19);
+    gfx_vline(g, x + 8, y + 6, 3);
+    gfx_vline(g, r - 8, y + 6, 3);
+    /* Raked windshield, short roof */
+    gfx_hline(g, x + 3, y + 22, bw - 6);
+    gfx_line(g, x + 2, y + 22, x + 5, y + 29);
+    gfx_line(g, r - 2, y + 22, r - 5, y + 29);
+    gfx_hline(g, x + 5, y + 29, bw - 10);
+    gfx_pixel(g, x + 5, y + 31, true);
+    gfx_pixel(g, r - 5, y + 31, true);
+    /* Big glass hatch */
+    gfx_hline(g, x + 5, y + 33, bw - 10);
+    gfx_line(g, x + 5, y + 33, x + 4, y + 39);
+    gfx_line(g, r - 5, y + 33, r - 4, y + 39);
+    gfx_vline(g, x + 4, y + 39, 7);
+    gfx_vline(g, r - 4, y + 39, 7);
+    gfx_line(g, x + 4, y + 46, x + 6, y + 48);
+    gfx_line(g, r - 4, y + 46, r - 6, y + 48);
+    gfx_hline(g, x + 7, y + 49, bw - 14);
+    /* Rear spoiler */
+    gfx_hline(g, x + 1, y + h - 5, bw - 2);
+    /* Mirrors */
+    gfx_pixel(g, x - 1, y + 23, true);
+    gfx_pixel(g, r + 1, y + 23, true);
     /* Wheels */
-    int wy[2] = {y + 7, y + h - 14};
+    int wy[2] = {y + 10, y + 38};
     for (int i = 0; i < 2; i++) {
         gfx_fill(g, x - 3, wy[i], 3, 7, true);
         gfx_fill(g, x + bw, wy[i], 3, 7, true);
@@ -265,14 +292,31 @@ static void draw_corner(gfx_t *g, const ui_model_t *m, const ui_sensor_t *s, int
     gfx_text_small(g, right ? x + bw - tw : x, y + 18, buf);
 }
 
+/* Assigned wheel whose sensor hasn't been heard since boot. */
+static void draw_corner_waiting(gfx_t *g, uint32_t id, int x, int y, bool right, uint32_t frame)
+{
+    char buf[16];
+    int bw = 46, dw = gfx_seg7_width("--.-", &SEG_SMALL);
+    gfx_seg7_str(g, right ? x + bw - dw : x + 31 - dw, y + 1, "--.-", &SEG_SMALL);
+    gfx_text_small(g, right ? x + 2 : x + 34, y + 11, "PSI");
+    snprintf(buf, sizeof(buf), "%04X %s", (unsigned)(id & 0xffff), (frame / 10) % 2 ? "WAIT" : "");
+    gfx_text_small(g, right ? x + bw - gfx_text_small_width(buf) : x, y + 18, buf);
+}
+
 void ui_render_overview(gfx_t *g, const ui_model_t *m, uint32_t frame)
 {
+    static const int cx[4] = {0, W - 46, 0, W - 46}, cy[4] = {4, 4, 34, 34};
     draw_car(g, W / 2, 2, 57);
-    /* Most recent four IDs in the corners (wheel position is not known). */
-    const ui_sensor_t *s[4] = {0};
-    for (int i = 0; i < m->nshown && i < 4; i++) s[i] = &m->s[i];
-    draw_corner(g, m, s[0], 0, 4, false, frame);
-    draw_corner(g, m, s[1], W - 46, 4, true, frame);
-    draw_corner(g, m, s[2], 0, 34, false, frame);
-    draw_corner(g, m, s[3], W - 46, 34, true, frame);
+    for (int i = 0; i < 4; i++) {
+        bool right = i & 1;
+        if (m->wheels_assigned) {
+            /* Corners are the assigned wheels: FL, FR, RL, RR. */
+            const ui_wheel_t *w = &m->wheel[i];
+            if (w->id && !w->heard) draw_corner_waiting(g, w->id, cx[i], cy[i], right, frame);
+            else draw_corner(g, m, w->id ? &w->s : NULL, cx[i], cy[i], right, frame);
+        } else {
+            /* No wheels assigned: the four most recently heard IDs, newest first. */
+            draw_corner(g, m, i < m->nshown ? &m->s[i] : NULL, cx[i], cy[i], right, frame);
+        }
+    }
 }

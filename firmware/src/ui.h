@@ -24,7 +24,15 @@ typedef struct {
     int16_t  rssi_dbm;
     uint32_t count;          /* packets received from this ID */
     uint32_t last_ms;        /* uptime of last reception */
+    uint8_t  wheel;          /* 0 = not assigned, 1..4 = FL, FR, RL, RR */
 } ui_sensor_t;
+
+/* A wheel position (FL, FR, RL, RR) and the sensor assigned to it. */
+typedef struct {
+    uint32_t id;             /* 0 = no sensor assigned */
+    bool     heard;          /* `s` is valid: the ID was heard since boot */
+    ui_sensor_t s;
+} ui_wheel_t;
 
 typedef struct {
     uint32_t now_ms;
@@ -37,6 +45,8 @@ typedef struct {
     int      nsensors;                 /* known IDs (up to 20) */
     ui_sensor_t s[UI_MAX_WHEELS];      /* most recent first */
     int      nshown;
+    ui_wheel_t wheel[UI_MAX_WHEELS];   /* FL, FR, RL, RR */
+    bool     wheels_assigned;          /* any wheel has an ID: overview shows wheels */
 } ui_model_t;
 
 typedef enum {

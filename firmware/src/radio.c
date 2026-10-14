@@ -72,18 +72,28 @@ static spi_device_handle_t s_spi;
 static SemaphoreHandle_t s_lock;
 static TaskHandle_t s_task;
 static radio_packet_cb_t s_cb;
-static radio_config_t s_cfg = {
+static const radio_config_t k_default_cfg = {
     .freq_hz = 315000000,
     .bitrate = 19231,      /* 52 us chips */
     .rxbw_hz = 83333,      /* +/-83 kHz: ~35 kHz deviation + sensor crystal error */
     .lna_gain = 1,
     .sync = RADIO_SYNC_5556,
 };
+static radio_config_t s_cfg = k_default_cfg;
 static radio_stats_t s_stats;
 static bool s_raw_log;
 
 static int8_t s_hist[HIST_LEN];
 static int s_hist_head, s_hist_count;
+
+static radio_event_t s_events[RADIO_EVENTS];
+static int s_ev_head, s_ev_count;
+static uint32_t s_ev_total;
+static radio_event_t s_top[RADIO_TOP_EVENTS];
+static int s_top_count;
+static radio_capture_t s_caps[RADIO_CAPTURES];
+static int s_cap_head, s_cap_count;
+static uint32_t s_cap_total;
 
 /* ------------------------------------------------------------- SPI ----- */
 
@@ -238,6 +248,19 @@ static void IRAM_ATTR dio_isr(void *arg)
     portYIELD_FROM_ISR(woken);
 }
 
+/* Keeps the strongest finished events; ties keep the older one. */
+static void top_insert(const radio_event_t *e)
+{
+    if (s_top_count < RADIO_TOP_EVENTS) {
+        s_top[s_top_count++] = *e;
+        return;
+    }
+    int weakest = 0;
+    for (int i = 1; i < s_top_count; i++)
+        if (s_top[i].peak_dbm < s_top[weakest].peak_dbm) weakest = i;
+    if (e->peak_dbm > s_top[weakest].peak_dbm) s_top[weakest] = *e;
+}
+
 static void hist_push(int dbm)
 {
     if (dbm < -128) dbm = -128;
@@ -270,6 +293,19 @@ static void handle_payload(int rssi, uint32_t sync_ms)
         else ESP_LOGD(TAG, "raw %s rssi=%d", hex, rssi);
     }
 
+    if (rssi >= s_stats.noise_dbm + RADIO_CAPTURE_DB) {
+        radio_capture_t *c = &s_caps[s_cap_head];
+        s_cap_head = (s_cap_head + 1) % RADIO_CAPTURES;
+        if (s_cap_count < RADIO_CAPTURES) s_cap_count++;
+        s_cap_total++;
+        c->ms = sync_ms;
+        c->rssi_dbm = (int8_t)rssi;
+        c->noise_dbm = (int8_t)s_stats.noise_dbm;
+        c->status = (uint8_t)st;
+        c->len = (uint8_t)(n < RADIO_CAPTURE_MAX ? n : RADIO_CAPTURE_MAX);
+        memcpy(c->data, buf, c->len);
+    }
+
     switch (st) {
     case TPMS_FORD_OK:
         s_stats.decoded++;
@@ -300,6 +336,10 @@ static void radio_task(void *arg)
     uint32_t hist_t0 = 0;
     int hist_max = -128, noise_acc = 0, noise_n = 0;
     int noise_ema_x16 = -120 * 16;
+    /* RF event tracking: counters at the start of the current window/event */
+    radio_event_t *ev = NULL;
+    uint32_t win_syncs = 0, win_payloads = 0, win_decoded = 0;
+    uint32_t ev_syncs = 0, ev_payloads = 0, ev_decoded = 0;
 
     for (;;) {
         uint32_t bits = 0;
@@ -345,9 +385,41 @@ static void radio_task(void *arg)
         if (now - hist_t0 >= HIST_PERIOD_MS) {
             if (noise_n) {
                 hist_push(hist_max);
-                noise_ema_x16 += (noise_acc * 16 / noise_n - noise_ema_x16) / 4;
+                bool loud = noise_ema_x16 != -120 * 16 && hist_max >= s_stats.noise_dbm + RADIO_EVENT_DB;
+                if (loud && !ev) {
+                    ev = &s_events[s_ev_head];
+                    s_ev_head = (s_ev_head + 1) % RADIO_EVENTS;
+                    if (s_ev_count < RADIO_EVENTS) s_ev_count++;
+                    s_ev_total++;
+                    *ev = (radio_event_t){.start_ms = hist_t0, .peak_dbm = (int8_t)hist_max,
+                                          .noise_dbm = (int8_t)s_stats.noise_dbm};
+                    ev_syncs = win_syncs;
+                    ev_payloads = win_payloads;
+                    ev_decoded = win_decoded;
+                }
+                if (ev) {
+                    /* Also counts the first quiet window: a packet can finish after the energy. */
+                    ev->end_ms = now;
+                    if (hist_max > ev->peak_dbm) ev->peak_dbm = (int8_t)hist_max;
+                    ev->syncs = (uint16_t)(s_stats.syncs - ev_syncs);
+                    ev->payloads = (uint16_t)(s_stats.payloads - ev_payloads);
+                    ev->decoded = (uint16_t)(s_stats.decoded - ev_decoded);
+                    if (!loud) {
+                        top_insert(ev);
+                        ev = NULL;
+                    }
+                }
+                /* Noise floor: seeded by the first window, then fast from quiet
+                 * windows and very slow from loud ones, so bursts barely move it
+                 * but a lasting change in the noise is still followed. */
+                int avg_x16 = noise_acc * 16 / noise_n;
+                if (noise_ema_x16 == -120 * 16) noise_ema_x16 = avg_x16;
+                else noise_ema_x16 += (avg_x16 - noise_ema_x16) / (loud ? 64 : 4);
                 s_stats.noise_dbm = (int16_t)(noise_ema_x16 / 16);
             }
+            win_syncs = s_stats.syncs;
+            win_payloads = s_stats.payloads;
+            win_decoded = s_stats.decoded;
             hist_t0 = now;
             hist_max = -128;
             noise_acc = noise_n = 0;
@@ -458,6 +530,55 @@ esp_err_t radio_set_config(const radio_config_t *cfg)
     ESP_LOGI(TAG, "reconfigured: %.3f MHz, %u chip/s, RxBw %u Hz, LNA G%u", now.freq_hz / 1e6,
              (unsigned)now.bitrate, (unsigned)now.rxbw_hz, now.lna_gain);
     return err;
+}
+
+int radio_get_events(radio_event_t *out, int max, uint32_t *total)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int n = s_ev_count < max ? s_ev_count : max;
+    for (int i = 0; i < n; i++) out[i] = s_events[(s_ev_head - n + i + RADIO_EVENTS) % RADIO_EVENTS];
+    if (total) *total = s_ev_total;
+    xSemaphoreGive(s_lock);
+    return n;
+}
+
+int radio_get_captures(radio_capture_t *out, int max, uint32_t *total)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int n = s_cap_count < max ? s_cap_count : max;
+    for (int i = 0; i < n; i++) out[i] = s_caps[(s_cap_head - n + i + RADIO_CAPTURES) % RADIO_CAPTURES];
+    if (total) *total = s_cap_total;
+    xSemaphoreGive(s_lock);
+    return n;
+}
+
+int radio_get_top_events(radio_event_t *out, int max)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int n = s_top_count < max ? s_top_count : max;
+    for (int i = 0; i < n; i++) out[i] = s_top[i];
+    xSemaphoreGive(s_lock);
+    /* oldest first (n <= 16) */
+    for (int i = 1; i < n; i++)
+        for (int k = i; k > 0 && out[k].start_ms < out[k - 1].start_ms; k--) {
+            radio_event_t t = out[k];
+            out[k] = out[k - 1];
+            out[k - 1] = t;
+        }
+    return n;
+}
+
+void radio_clear_log(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_ev_count = s_cap_count = s_top_count = 0;
+    s_ev_total = s_cap_total = 0;
+    xSemaphoreGive(s_lock);
+}
+
+void radio_default_config(radio_config_t *out)
+{
+    *out = k_default_cfg;
 }
 
 int radio_rssi_history(int8_t *out, int max)

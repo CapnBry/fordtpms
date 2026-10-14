@@ -76,6 +76,25 @@ uint32_t sensors_generation(void)
     return s_gen;
 }
 
+bool sensors_get(uint32_t id, sensor_entry_t *out)
+{
+    bool found = false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (int i = 0; i < s_count && !found; i++) {
+        if (s_tab[i].pkt.id == id) {
+            *out = s_tab[i];
+            found = true;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    return found;
+}
+
+int sensors_count(void)
+{
+    return s_count;
+}
+
 void sensors_clear(void)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);

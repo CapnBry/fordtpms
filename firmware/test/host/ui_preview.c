@@ -94,6 +94,22 @@ int main(int argc, char **argv)
     ui_render_overview(&g, &m, 41);
     save(&g, "overview_alt");
 
+    /* Wheels assigned: FL and FR heard, RL assigned but not heard yet, RR empty */
+    ui_model_t wm = m;
+    wm.wheels_assigned = true;
+    wm.wheel[0] = (ui_wheel_t){.id = m.s[1].id, .heard = true, .s = m.s[1]};
+    wm.wheel[0].s.wheel = 1;
+    wm.wheel[1] = (ui_wheel_t){.id = m.s[0].id, .heard = true, .s = m.s[0]};
+    wm.wheel[1].s.wheel = 2;
+    wm.wheel[2] = (ui_wheel_t){.id = 0x364318f4};
+    gfx_clear(&g); gfx_set_origin(&g, 2, 1);
+    ui_render_overview(&g, &wm, 15);
+    save(&g, "overview_wheels");
+    ui_sensor_t ws = wm.wheel[1].s;
+    gfx_clear(&g); gfx_set_origin(&g, 2, 1);
+    ui_render_detail(&g, &wm, &ws, 1);
+    save(&g, "detail_wheel");
+
     /* Burn-in shift extremes and dimmed contrast */
     gfx_clear(&g); gfx_set_origin(&g, 0, 0);
     ui_render_overview(&g, &m, 1);

@@ -1,0 +1,974 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FORD TPMS</title>
+<!-- favicon: tire over two lit Larson scanner segments -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='13' r='12' fill='%23151515' stroke='%238a8a92' stroke-width='1.2'/%3E%3Ccircle cx='16' cy='13' r='10.6' fill='none' stroke='%235c5c64' stroke-width='2.4' stroke-dasharray='2.2 1.9'/%3E%3Ccircle cx='16' cy='13' r='6.2' fill='%239a9aa2'/%3E%3Ccircle cx='16' cy='13' r='4.4' fill='%232a2a2e'/%3E%3Ccircle cx='16' cy='13' r='1.6' fill='%23c8c8cc'/%3E%3Crect x='1' y='26' width='30' height='6' rx='2' fill='%23000' stroke='%23555' stroke-width='.8'/%3E%3Crect x='3' y='27.5' width='5.5' height='3' rx='.8' fill='%23ff2414' opacity='.15'/%3E%3Crect x='9.5' y='27.5' width='5.5' height='3' rx='.8' fill='%23ff2414' opacity='.45'/%3E%3Crect x='16' y='27.5' width='5.5' height='3' rx='.8' fill='%23ff2414'/%3E%3Crect x='22.5' y='27.5' width='5.5' height='3' rx='.8' fill='%23ff2414' opacity='.15'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #050505;
+  --panel: #0d0d0f;
+  --bezel: #1b1b1f;
+  --chrome: #3a3a40;
+  --red: #ff2414;
+  --amber: #ffa21a;
+  --green: #36ff5e;
+  --blue: #3fb6ff;
+  --dim: #5a5a60;
+  --text: #c9c9cf;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body {
+  font: 13px/1.3 "Eurostile", "Microgramma", "Bank Gothic", "Arial Narrow", Arial, sans-serif;
+  letter-spacing: .08em;
+  min-height: 100vh;
+  background:
+    repeating-linear-gradient(0deg, rgba(255,255,255,.012) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at 50% -20%, #1c1214 0%, var(--bg) 60%);
+}
+.dash { max-width: 1280px; margin: 0 auto; padding: 12px 16px 24px; }
+
+/* ---- header + scanner ---- */
+header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.brand { font-weight: 700; font-size: 22px; letter-spacing: .35em; color: #e8e8ec; text-transform: uppercase; }
+.brand small { display: block; font-size: 10px; letter-spacing: .4em; color: var(--red); font-weight: 400; }
+.clock { font-family: ui-monospace, "Consolas", monospace; color: var(--amber); font-size: 13px; text-align: right; }
+.clock span { color: var(--dim); }
+.scanner {
+  height: 22px; margin: 10px 0 14px; padding: 4px; display: grid; grid-template-columns: repeat(16, 1fr); gap: 4px;
+  background: #000; border: 2px solid var(--bezel); border-radius: 12px; box-shadow: inset 0 0 12px #000, 0 0 0 1px #000;
+}
+.scanner i { border-radius: 3px; background: var(--red); opacity: .06; }
+
+/* ---- panels ---- */
+.grid { display: grid; gap: 14px; grid-template-columns: 1fr 1.35fr; }
+.panel {
+  position: relative; background: linear-gradient(180deg, #121215, var(--panel));
+  border: 1px solid #000; border-radius: 6px; padding: 12px 14px 14px;
+  box-shadow: inset 0 1px 0 #2a2a30, inset 0 -1px 0 #000, 0 0 0 2px var(--bezel), 0 6px 18px #000;
+  min-width: 0;
+}
+.panel h2 {
+  margin: 0 0 10px; font-size: 11px; font-weight: 700; letter-spacing: .38em; color: var(--dim); text-transform: uppercase;
+  display: flex; justify-content: space-between; gap: 8px;
+}
+.panel h2 b { color: var(--red); font-weight: 700; }
+.span2 { grid-column: 1 / -1; }
+
+/* ---- 7 segment displays ---- */
+.seg { display: inline-block; vertical-align: middle; --on: var(--red); }
+.seg svg { display: block; height: 100%; width: auto; overflow: visible; }
+.seg polygon, .seg circle { fill: var(--on); opacity: .045; transition: opacity .08s; }
+.seg .on { opacity: 1; filter: drop-shadow(0 0 2px var(--on)); }
+.amber { --on: var(--amber); }
+.green { --on: var(--green); }
+.blue  { --on: var(--blue); }
+.lcd { background: #000; border-radius: 4px; padding: 6px 8px; box-shadow: inset 0 0 10px #000, inset 0 0 0 1px #222; }
+
+/* ---- signal gauge ---- */
+.gauge-row { display: grid; grid-template-columns: auto 1fr auto; gap: 14px; align-items: stretch; }
+.voice { display: flex; gap: 6px; align-items: center; padding: 8px 10px; }
+.voice .col { display: flex; flex-direction: column; gap: 3px; justify-content: center; }
+.voice .col i { width: 22px; height: 6px; background: var(--red); opacity: .07; border-radius: 1px; }
+.voice .col i.on { opacity: 1; box-shadow: 0 0 6px var(--red); }
+.voice-wrap { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.voice-wrap .lbl { font-size: 9px; color: var(--dim); letter-spacing: .3em; }
+.tach { position: relative; padding: 8px 10px 4px; }
+.tach svg { width: 100%; height: 130px; display: block; }
+.tach rect.bar { opacity: .09; }
+.tach rect.bar.on { opacity: 1; }
+.tach text { fill: var(--dim); font-size: 9px; letter-spacing: .1em; font-family: inherit; }
+.readout { display: flex; flex-direction: column; justify-content: center; align-items: flex-end; gap: 6px; padding: 8px 12px; }
+.readout .big { height: 54px; }
+.unit { font-size: 10px; color: var(--dim); letter-spacing: .3em; }
+.sub { display: flex; gap: 18px; justify-content: flex-end; }
+.sub div { text-align: right; }
+.sub .seg { height: 20px; }
+
+/* ---- RF history ---- */
+#hist { width: 100%; height: 110px; display: block; background: #000; border-radius: 4px; }
+
+/* ---- buttons (status lamps) ---- */
+.buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+.btn {
+  font-size: 10px; font-weight: 700; letter-spacing: .2em; text-align: center; padding: 9px 4px; border-radius: 3px;
+  background: #160605; color: #4a1a16; border: 1px solid #000; box-shadow: inset 0 1px 0 #2a0d0a, 0 2px 0 #000;
+  text-transform: uppercase; transition: background .15s, color .15s, box-shadow .15s; user-select: none;
+}
+.btn.on    { background: #ff2414; color: #2a0300; box-shadow: 0 0 14px #ff2414aa, inset 0 1px 0 #ff8a7a; }
+.btn.amber { background: #1a1004; color: #4a3210; }
+.btn.amber.on { background: var(--amber); color: #2a1800; box-shadow: 0 0 14px #ffa21aaa, inset 0 1px 0 #ffd38a; }
+.btn.green { background: #04160a; color: #10401c; }
+.btn.green.on { background: var(--green); color: #002a0a; box-shadow: 0 0 14px #36ff5eaa, inset 0 1px 0 #b0ffc0; }
+.btn.blink.on { animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: .35; } }
+
+/* ---- tire scan ---- */
+.car { position: relative; display: grid; grid-template-columns: 1fr 120px 1fr; grid-template-rows: 1fr 1fr; gap: 10px; align-items: center; }
+.car svg.body { grid-column: 2; grid-row: 1 / 3; width: 120px; height: 260px; }
+.tire { padding: 8px 10px; border-radius: 4px; background: #000; box-shadow: inset 0 0 0 1px #222; min-height: 112px; transition: box-shadow .2s; }
+.tire.r { text-align: right; }
+.tire .p { height: 40px; }
+/* Pressure digits with the PSI unit on the MQTT label's side, on the digits' baseline */
+.tire .prow { display: flex; align-items: flex-end; justify-content: space-between; gap: 6px; }
+.tire.r .prow { flex-direction: row-reverse; }
+.tire .unit-psi { font-size: 10px; line-height: 1; color: var(--dim); letter-spacing: .15em; margin-bottom: -1px; }
+.tire .id { font-family: ui-monospace, Consolas, monospace; color: var(--amber); font-size: 12px; letter-spacing: .15em; }
+.tire .meta { font-size: 10px; color: var(--dim); letter-spacing: .15em; margin-top: 4px; }
+.tire .meta b { color: var(--text); font-weight: 400; }
+.tire { cursor: pointer; }
+.tire:hover { box-shadow: inset 0 0 0 1px var(--amber); }
+.tire .pos { font-size: 10px; font-weight: 700; letter-spacing: .3em; color: var(--red); display: flex; justify-content: space-between; gap: 6px; }
+.tire.r .pos { flex-direction: row-reverse; }
+.tire .pos .mq { color: var(--green); font-weight: 400; letter-spacing: .15em; }
+.tire.empty .p, .tire.empty .id, .tire.unheard .p,
+.tire.empty .unit-psi, .tire.unheard .unit-psi { opacity: .25; }
+.tire.flash { box-shadow: inset 0 0 0 2px var(--red), 0 0 18px #ff241466; }
+.tire.moving .id::after { content: " \25B6 MOVING"; color: var(--green); font-size: 9px; }
+.tire.learn .id::after { content: " \25C6 LEARN"; color: var(--blue); font-size: 9px; }
+
+/* ---- control buttons ---- */
+.controls { display: flex; gap: 8px; align-items: center; }
+.ctl {
+  font: 700 10px/1 inherit; letter-spacing: .25em; text-transform: uppercase; cursor: pointer;
+  padding: 9px 12px; border-radius: 3px; color: var(--amber); background: #120c03; border: 1px solid #3a2a0c;
+  box-shadow: inset 0 1px 0 #2a1d08, 0 2px 0 #000;
+}
+.ctl:hover { background: var(--amber); color: #2a1800; box-shadow: 0 0 14px #ffa21aaa; }
+.ctl:active { transform: translateY(1px); }
+.ctl:disabled { opacity: .3; cursor: default; pointer-events: none; }
+
+/* ---- modal dialogs ---- */
+dialog {
+  width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 0; color: var(--text);
+  background: linear-gradient(180deg, #141417, #0a0a0c); border: 2px solid var(--red); border-radius: 8px;
+  box-shadow: 0 0 40px #ff241455, inset 0 0 0 1px #000;
+}
+dialog::backdrop { background: rgba(0, 0, 0, .78); backdrop-filter: blur(2px); }
+dialog[open] { animation: modal-in .18s ease-out; }
+@keyframes modal-in { from { transform: scale(.96); opacity: 0; } }
+.m-head { padding: 12px 16px 10px; border-bottom: 1px solid #2a0a06; }
+.m-head h3 { margin: 0; font-size: 13px; letter-spacing: .4em; color: #e8e8ec; text-transform: uppercase; }
+.m-head small { display: block; font-size: 9px; letter-spacing: .35em; color: var(--red); margin-top: 3px; }
+.m-scan { height: 4px; margin-top: 10px; background: #1a0503; border-radius: 2px; position: relative; overflow: hidden; }
+.m-scan::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 18%; border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--red), transparent); box-shadow: 0 0 10px var(--red);
+  animation: m-sweep 1.6s ease-in-out infinite alternate;
+}
+@keyframes m-sweep { from { left: 0; } to { left: 82%; } }
+.m-body { padding: 14px 16px; display: grid; gap: 12px; }
+.m-foot { padding: 12px 16px 14px; display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; border-top: 1px solid #1c1c20; }
+.m-foot .spacer { flex: 1; }
+.field { display: grid; grid-template-columns: 130px 1fr auto; gap: 10px; align-items: center; }
+.field label { font-size: 10px; letter-spacing: .25em; color: var(--dim); text-transform: uppercase; }
+.field .hint { font-size: 10px; color: var(--dim); letter-spacing: .1em; min-width: 56px; text-align: right; }
+.field input, .field select {
+  width: 100%; background: #000; color: var(--amber); border: 1px solid #2a2a2e; border-radius: 3px; padding: 7px 9px;
+  font: 14px ui-monospace, Consolas, monospace; letter-spacing: .08em; text-shadow: 0 0 6px #ffa21a66; outline: none;
+}
+.field input:focus, .field select:focus { border-color: var(--amber); box-shadow: 0 0 10px #ffa21a44; }
+.field input[type=range] { -webkit-appearance: none; appearance: none; height: 22px; padding: 0; background: transparent; border: none; box-shadow: none; }
+.field input[type=range]::-webkit-slider-runnable-track { height: 8px; border-radius: 2px; background: repeating-linear-gradient(90deg, #3a0c08 0 6px, #000 6px 8px); box-shadow: inset 0 0 0 1px #2a2a2e; }
+.field input[type=range]::-moz-range-track { height: 8px; border-radius: 2px; background: repeating-linear-gradient(90deg, #3a0c08 0 6px, #000 6px 8px); }
+.field input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 22px; margin-top: -7px; border-radius: 2px; background: var(--red); box-shadow: 0 0 10px var(--red); border: none; }
+.field input[type=range]::-moz-range-thumb { width: 14px; height: 22px; border-radius: 2px; background: var(--red); box-shadow: 0 0 10px var(--red); border: none; }
+.m-note { font-size: 10px; letter-spacing: .12em; color: var(--dim); line-height: 1.5; }
+.m-err { min-height: 14px; font-size: 11px; letter-spacing: .15em; color: var(--red); }
+.m-err.ok { color: var(--green); }
+.posgrid { display: grid; grid-template-columns: 1fr 70px 1fr; grid-template-rows: auto auto; gap: 8px; align-items: center; }
+.posgrid .carmini { grid-column: 2; grid-row: 1 / 3; height: 96px; border: 1.5px solid var(--red); border-radius: 22px 22px 16px 16px; box-shadow: 0 0 8px #ff241466; }
+.posbtn { cursor: pointer; padding: 8px; border-radius: 3px; background: #160605; border: 1px solid #000; text-align: center;
+  font-size: 10px; letter-spacing: .2em; color: #8a3a32; box-shadow: inset 0 1px 0 #2a0d0a; }
+.posbtn b { display: block; font: 12px ui-monospace, Consolas, monospace; letter-spacing: .1em; color: var(--dim); margin-top: 3px; }
+.posbtn.sel { background: var(--red); color: #2a0300; box-shadow: 0 0 14px #ff2414aa; }
+.posbtn.sel b { color: #2a0300; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 150px; overflow-y: auto; }
+.chip { cursor: pointer; padding: 5px 8px; border-radius: 3px; background: #000; border: 1px solid #2a2a2e;
+  font: 12px ui-monospace, Consolas, monospace; color: var(--amber); }
+.chip small { color: var(--dim); margin-left: 6px; }
+.chip.sel { border-color: var(--amber); box-shadow: 0 0 10px #ffa21a66; }
+.chip.taken { color: var(--green); }
+
+/* ---- telemetry ---- */
+.tele { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+.tele .lcd { display: flex; flex-direction: column; gap: 4px; }
+.tele .lbl { font-size: 9px; color: var(--dim); letter-spacing: .25em; }
+.tele .seg { height: 20px; align-self: flex-end; }
+
+/* ---- scan log ---- */
+.log-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-family: ui-monospace, "Consolas", "DejaVu Sans Mono", monospace; font-size: 12.5px; letter-spacing: .02em; }
+th { color: var(--dim); font-weight: 400; font-size: 10px; letter-spacing: .2em; text-align: right; padding: 4px 8px; border-bottom: 1px dashed #333; white-space: nowrap; }
+td { color: var(--amber); text-align: right; padding: 5px 8px; border-bottom: 1px solid #141414; white-space: nowrap; text-shadow: 0 0 6px #ffa21a55; }
+th.l, td.l { text-align: left; }
+td.id { color: #ffd38a; }
+td.psi { color: var(--green); text-shadow: 0 0 6px #36ff5e66; font-weight: 700; }
+td.mode-MOVING { color: var(--green); }
+td.mode-LEARN { color: var(--blue); }
+td.pos { color: var(--red); font-weight: 700; text-shadow: 0 0 6px #ff241466; }
+tbody tr { cursor: pointer; }
+tbody tr:hover td { background: #140a05; }
+tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
+@keyframes fresh { from { background: #5a1208; } to { background: transparent; } }
+.empty-log { color: var(--dim); text-align: center; padding: 18px; letter-spacing: .3em; }
+.foot { margin-top: 8px; font-size: 10px; color: var(--dim); letter-spacing: .2em; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+
+/* ---- link status ---- */
+.lost {
+  position: fixed; left: 50%; top: 18px; transform: translateX(-50%); z-index: 10; display: none;
+  background: #000; color: var(--red); border: 2px solid var(--red); padding: 10px 22px; border-radius: 4px;
+  font-weight: 700; letter-spacing: .4em; box-shadow: 0 0 30px #ff241488; animation: blink 1s steps(2) infinite;
+}
+.lost.show { display: block; }
+.hb { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #300; margin-left: 6px; vertical-align: middle; transition: background .3s; }
+.hb.on { background: var(--green); box-shadow: 0 0 8px var(--green); transition: none; }
+.stale { opacity: .45; filter: grayscale(.6); transition: opacity .5s; }
+
+@media (max-width: 900px) {
+  .grid { grid-template-columns: 1fr; }
+  .gauge-row { grid-template-columns: 1fr; }
+  .voice-wrap { display: none; }
+  .readout { align-items: stretch; }
+  .readout .big { align-self: flex-end; }
+  .buttons { grid-template-columns: repeat(2, 1fr); }
+  .field { grid-template-columns: 1fr auto; }
+  .field label { grid-column: 1 / -1; }
+}
+@media (max-width: 520px) {
+  .dash { padding: 10px 10px 20px; }
+  .brand { font-size: 16px; }
+  .car { grid-template-columns: 1fr 70px 1fr; }
+  .car svg.body { width: 70px; height: 170px; }
+  .tire .p { height: 30px; }
+}
+</style>
+</head>
+<body>
+<div class="lost" id="lost">SIGNAL LOST &middot; RECONNECTING</div>
+<div class="dash" id="dash">
+  <header>
+    <div class="brand">FORD TPMS<small>Tire Pressure Surveillance System</small></div>
+    <div class="controls">
+      <button class="ctl" id="open-radio" type="button">Radio</button>
+      <button class="ctl" id="open-display" type="button">Display</button>
+    </div>
+    <div class="clock"><span>LINK</span><i class="hb" id="hb"></i> &nbsp; <span id="host">----</span><br><span id="clock">--</span></div>
+  </header>
+  <div class="scanner" id="scanner"></div>
+
+  <div class="grid">
+    <section class="panel span2">
+      <h2><span>RF Signal <b>&middot;</b> <span id="freq">---.-- MHz</span></span><span id="rfcfg"></span></h2>
+      <div class="gauge-row">
+        <div class="voice-wrap">
+          <div class="lcd voice" id="voice"></div>
+          <div class="lbl">RF VOICE</div>
+        </div>
+        <div class="lcd tach"><svg id="tach" viewBox="0 0 600 130" preserveAspectRatio="none"></svg></div>
+        <div class="lcd readout">
+          <div class="unit">SIGNAL dBm</div>
+          <div class="seg big" id="sig"></div>
+          <div class="sub">
+            <div><div class="unit">NOISE</div><div class="seg amber" id="noise"></div></div>
+            <div><div class="unit">LAST PKT</div><div class="seg green" id="lastrssi"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="buttons">
+        <div class="btn green" id="b-cruise">Normal Cruise</div>
+        <div class="btn" id="b-pursuit">Pursuit</div>
+        <div class="btn amber" id="b-turbo">Turbo Boost</div>
+        <div class="btn blink" id="b-scan">Tire Scan</div>
+        <div class="btn green" id="b-wifi">Wi-Fi</div>
+        <div class="btn green" id="b-mqtt">MQTT</div>
+        <div class="btn amber" id="b-ntp">Time Sync</div>
+        <div class="btn amber" id="b-batt">Aux Power</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2><span>Tire Positions <b>&middot;</b> tap to assign</span><span id="scan-count"></span></h2>
+      <div class="car" id="car">
+        <div class="tire" id="tire0"></div>
+        <svg class="body" viewBox="0 0 120 260" aria-hidden="true">
+          <!-- 1982 Pontiac Trans Am, top view, nose up -->
+          <g fill="none" stroke="#ff2414" stroke-width="1.5" stroke-linejoin="round" style="filter:drop-shadow(0 0 3px #ff2414)">
+            <path d="M60 7 L82 10 Q93 12 97 22 Q103 34 104 50 L104 100 Q104 120 106 140 L107 178 L106 236 Q105 250 92 252 L28 252 Q15 250 14 236 L13 178 L14 140 Q16 120 16 100 L16 50 Q17 34 23 22 Q27 12 38 10 Z"/>
+            <path d="M27 18 L40 15 L40 24 L25 27 Z M93 18 L80 15 L80 24 L95 27 Z" stroke-width="1"/>
+            <path d="M50 24 L70 24 L76 90 L44 90 Z" stroke-width="1"/>
+            <path d="M52 36 L57 36 L56 48 L53 48 Z M63 36 L68 36 L67 48 L64 48 Z" stroke-width="1"/>
+            <path d="M28 98 Q60 90 92 98 L86 132 Q60 128 34 132 Z"/>
+            <path d="M16 104 L10 107 L10 111 L16 110 M104 104 L110 107 L110 111 L104 110" stroke-width="1"/>
+            <path d="M34 132 Q60 128 86 132 L87 150 Q60 147 33 150 Z" stroke-dasharray="3 3" stroke-width="1"/>
+            <path d="M33 150 Q60 147 87 150 Q93 180 89 214 Q87 224 76 225 L44 225 Q33 224 31 214 Q27 180 33 150 Z"/>
+            <path d="M17 232 Q60 226 103 232 L103 240 Q60 235 17 240 Z" stroke-width="1"/>
+            <path d="M40 22 L80 22" stroke-width="3" stroke="#ff2414" id="carscan"/>
+          </g>
+          <g fill="#ff241422" stroke="#ff2414" stroke-width="1">
+            <rect x="7" y="45" width="11" height="32" rx="3" id="w0"/>
+            <rect x="102" y="45" width="11" height="32" rx="3" id="w1"/>
+            <rect x="6" y="174" width="11" height="32" rx="3" id="w2"/>
+            <rect x="103" y="174" width="11" height="32" rx="3" id="w3"/>
+          </g>
+        </svg>
+        <div class="tire r" id="tire1"></div>
+        <div class="tire" id="tire2"></div>
+        <div class="tire r" id="tire3"></div>
+      </div>
+      <div class="foot"><span>Packets carry no wheel position: assign each ID to its wheel. Only assigned IDs are published to MQTT</span></div>
+    </section>
+
+    <section class="panel">
+      <h2><span>RF History <b>&middot;</b> 20 s</span><span>peak / 250 ms</span></h2>
+      <canvas id="hist"></canvas>
+      <h2 style="margin-top:14px"><span>Telemetry</span><span id="uptime-lbl"></span></h2>
+      <div class="tele">
+        <div class="lcd"><span class="lbl">SYNC</span><span class="seg amber" id="t-syncs"></span></div>
+        <div class="lcd"><span class="lbl">PAYLOADS</span><span class="seg amber" id="t-payloads"></span></div>
+        <div class="lcd"><span class="lbl">DECODED</span><span class="seg green" id="t-decoded"></span></div>
+        <div class="lcd"><span class="lbl">BAD</span><span class="seg" id="t-bad"></span></div>
+        <div class="lcd"><span class="lbl">ERR MANCH</span><span class="seg" id="t-em"></span></div>
+        <div class="lcd"><span class="lbl">ERR CKSUM</span><span class="seg" id="t-ec"></span></div>
+        <div class="lcd"><span class="lbl">ERR FLAGS</span><span class="seg" id="t-ef"></span></div>
+        <div class="lcd"><span class="lbl">OVERRUN</span><span class="seg" id="t-ovr"></span></div>
+        <div class="lcd"><span class="lbl">IDS</span><span class="seg green" id="t-ids"></span></div>
+        <div class="lcd"><span class="lbl">BEST dBm</span><span class="seg green" id="t-best"></span></div>
+        <div class="lcd"><span class="lbl">WORST dBm</span><span class="seg amber" id="t-worst"></span></div>
+        <div class="lcd"><span class="lbl">LAST PKT</span><span class="seg amber" id="t-lastpkt"></span></div>
+        <div class="lcd"><span class="lbl">UPTIME</span><span class="seg blue" id="t-up"></span></div>
+        <div class="lcd"><span class="lbl">BATTERY V</span><span class="seg blue" id="t-batt"></span></div>
+        <div class="lcd"><span class="lbl">WIFI dBm</span><span class="seg blue" id="t-wifi"></span></div>
+        <div class="lcd"><span class="lbl">MQTT PUB</span><span class="seg blue" id="t-mqtt"></span></div>
+      </div>
+    </section>
+
+    <section class="panel span2">
+      <h2><span>Scan Log <b>&middot;</b> unique IDs, newest first</span><span id="log-count"></span></h2>
+      <div class="log-wrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th class="l">Pos</th><th class="l">ID</th><th>PSI</th><th>kPa</th><th>Temp</th><th class="l">Mode</th>
+            <th class="l">Code</th><th>Flg</th><th>RSSI</th><th>Bursts</th><th>Pkts</th><th>Last</th><th>Age</th>
+          </tr></thead>
+          <tbody id="log"></tbody>
+        </table>
+        <div class="empty-log" id="log-empty">NO SENSORS ACQUIRED &middot; SCANNING</div>
+      </div>
+      <div class="foot"><span id="foot-l">Last = local time of last packet (uptime if clock not synced) &middot; tap a row to assign it to a wheel</span><span id="foot-r"></span></div>
+    </section>
+  </div>
+</div>
+
+<dialog id="dlg-tire">
+  <form method="dialog" id="f-tire">
+    <div class="m-head"><h3>Tire Assignment</h3><small>Wheel position &middot; sensor ID &middot; MQTT publish</small><div class="m-scan"></div></div>
+    <div class="m-body">
+      <div class="posgrid" id="t-pos">
+        <div class="posbtn" data-pos="0">FRONT LEFT<b></b></div>
+        <div class="carmini"></div>
+        <div class="posbtn" data-pos="1">FRONT RIGHT<b></b></div>
+        <div class="posbtn" data-pos="2">REAR LEFT<b></b></div>
+        <div class="posbtn" data-pos="3">REAR RIGHT<b></b></div>
+      </div>
+      <div class="field"><label for="t-id">Sensor ID</label><input id="t-id" maxlength="8" placeholder="e.g. 364343a4" autocomplete="off" spellcheck="false"><span class="hint">hex</span></div>
+      <div class="m-note">Sensors heard since boot (green = already on a wheel):</div>
+      <div class="chips" id="t-chips"></div>
+      <div class="m-note">Assigned IDs are saved and published to MQTT with Home Assistant discovery. An ID can be assigned before it has been heard. Clearing a wheel stops publishing; its Home Assistant device stays until you delete it there.</div>
+      <div class="m-err" id="t-err"></div>
+    </div>
+    <div class="m-foot">
+      <button class="ctl" type="button" id="t-clear">Clear position</button>
+      <span class="spacer"></span>
+      <button class="ctl" value="cancel" formnovalidate>Abort</button>
+      <button class="ctl" type="button" id="t-save">Engage</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-radio">
+  <form method="dialog" id="f-radio">
+    <div class="m-head"><h3>Radio Configuration</h3><small>SX1278 FSK receiver &middot; saved to flash</small><div class="m-scan"></div></div>
+    <div class="m-body">
+      <div class="field"><label for="r-freq">Frequency</label><input id="r-freq" type="number" min="137" max="525" step="0.001" required><span class="hint">MHz</span></div>
+      <div class="field"><label for="r-bw">Bandwidth</label><select id="r-bw"></select><span class="hint">kHz</span></div>
+      <div class="field"><label for="r-lna">LNA gain</label><select id="r-lna">
+        <option value="1">G1 &middot; maximum</option><option value="2">G2</option><option value="3">G3</option>
+        <option value="4">G4</option><option value="5">G5</option><option value="6">G6 &middot; minimum</option></select><span class="hint"></span></div>
+      <div class="field"><label for="r-sync">Sync word</label><select id="r-sync">
+        <option value="5556">5556 &middot; normal polarity</option><option value="aaa9">AAA9 &middot; inverted</option>
+        <option value="5555">5555 &middot; either polarity</option></select><span class="hint"></span></div>
+      <div class="field"><label for="r-bitrate">Chip rate</label><input id="r-bitrate" type="number" min="1200" max="300000" step="1" required><span class="hint">chip/s</span></div>
+      <div class="m-note">Same settings as the <b>radio</b> CLI command. Defaults: 315.000 MHz, 83.3 kHz, G1, 5556, 19231 chip/s. Changes apply immediately and survive reboots.</div>
+      <div class="m-err" id="r-err"></div>
+    </div>
+    <div class="m-foot">
+      <button class="ctl" type="button" id="r-defaults">Defaults</button>
+      <span class="spacer"></span>
+      <button class="ctl" value="cancel" formnovalidate>Abort</button>
+      <button class="ctl" type="button" id="r-save">Engage</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-display">
+  <form method="dialog" id="f-display">
+    <div class="m-head"><h3>Display Configuration</h3><small>SSD1306 OLED &middot; saved to flash</small><div class="m-scan"></div></div>
+    <div class="m-body">
+      <div class="field"><label for="d-bright">Brightness</label><input id="d-bright" type="range" min="0" max="255"><span class="hint" id="d-bright-v"></span></div>
+      <div class="field"><label for="d-dim">Dimmed</label><input id="d-dim" type="range" min="0" max="255"><span class="hint" id="d-dim-v"></span></div>
+      <div class="field"><label for="d-dim-after">Dim after</label><input id="d-dim-after" type="number" min="1" max="86400" required><span class="hint">s</span></div>
+      <div class="field"><label for="d-shift">Pixel shift</label><input id="d-shift" type="number" min="1" max="3600" required><span class="hint">s / step</span></div>
+      <div class="m-note">Same settings as the <b>display</b> CLI command. Contrast drops to <i>Dimmed</i> after <i>Dim after</i> seconds without a new packet; the layout moves one pixel every <i>Pixel shift</i> seconds against burn-in. <span id="d-state"></span></div>
+      <div class="m-err" id="d-err"></div>
+    </div>
+    <div class="m-foot">
+      <button class="ctl" type="button" id="d-defaults">Defaults</button>
+      <button class="ctl" type="button" id="d-wake">Wake</button>
+      <span class="spacer"></span>
+      <button class="ctl" value="cancel" formnovalidate>Abort</button>
+      <button class="ctl" type="button" id="d-save">Engage</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+/* ------------------------------------------------- 7 segment displays */
+const SEGS = {
+  "0":"abcdef","1":"bc","2":"abged","3":"abgcd","4":"fgbc","5":"afgcd","6":"afgedc","7":"abc","8":"abcdefg",
+  "9":"abcdfg","-":"g"," ":"","E":"adefg","r":"eg","o":"cdeg","n":"ceg","L":"def","H":"bcefg","P":"abefg",
+  "A":"abcefg","C":"adef","F":"aefg","d":"bcdeg","b":"cdefg","S":"afgcd","t":"defg","U":"bcdef","u":"cde",
+  "_":"d","h":"cefg","y":"bcdfg"
+};
+const SEGPTS = (() => {
+  /* cell 11 x 20, segments with pointed ends and a small gap at each joint */
+  const t = 1.3, gp = 0.7;
+  const h = (y) => `${gp},${y} ${gp+t},${y-t} ${11-gp-t},${y-t} ${11-gp},${y} ${11-gp-t},${y+t} ${gp+t},${y+t}`;
+  const v = (x, y0, y1) => `${x},${y0+gp} ${x+t},${y0+gp+t} ${x+t},${y1-gp-t} ${x},${y1-gp} ${x-t},${y1-gp-t} ${x-t},${y0+gp+t}`;
+  return { a: h(0), g: h(10), d: h(20), b: v(11,0,10), c: v(11,10,20), e: v(0,10,20), f: v(0,0,10) };
+})();
+const NS = "http://www.w3.org/2000/svg";
+const segCache = new Map();
+/* Renders `text` right-aligned into `cells` digit cells; '.' and ':' attach to the previous digit. */
+function seg(el, text, cells) {
+  if (typeof el === "string") el = $(el);
+  let st = segCache.get(el);
+  if (!st || st.cells !== cells) {
+    const pitch = 17, w = cells * pitch;
+    el.innerHTML = "";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", `-3 -2 ${w + 2} 24`);
+    const g = document.createElementNS(NS, "g");
+    g.setAttribute("transform", "skewX(-8) translate(3 0)");
+    svg.appendChild(g);
+    const digits = [];
+    for (let i = 0; i < cells; i++) {
+      const d = {};
+      for (const k of "abcdefg") {
+        const p = document.createElementNS(NS, "polygon");
+        p.setAttribute("points", SEGPTS[k]);
+        p.setAttribute("transform", `translate(${i * pitch} 0)`);
+        g.appendChild(p); d[k] = p;
+      }
+      const dp = document.createElementNS(NS, "circle");
+      dp.setAttribute("cx", i * pitch + 14.2); dp.setAttribute("cy", 20); dp.setAttribute("r", 1.4);
+      g.appendChild(dp); d.dp = dp;
+      const c1 = document.createElementNS(NS, "circle"), c2 = document.createElementNS(NS, "circle");
+      c1.setAttribute("cx", i * pitch + 15); c1.setAttribute("cy", 6); c1.setAttribute("r", 1.5);
+      c2.setAttribute("cx", i * pitch + 13.9); c2.setAttribute("cy", 14); c2.setAttribute("r", 1.5);
+      c1.style.display = c2.style.display = "none";
+      g.appendChild(c1); g.appendChild(c2); d.colon = [c1, c2];
+      digits.push(d);
+    }
+    el.appendChild(svg);
+    st = { cells, digits, text: null };
+    segCache.set(el, st);
+  }
+  text = String(text);
+  if (st.text === text) return;
+  st.text = text;
+  const cellsArr = [];
+  for (const ch of text) {
+    if ((ch === "." || ch === ":") && cellsArr.length) cellsArr[cellsArr.length - 1][ch === "." ? "dp" : "colon"] = true;
+    else cellsArr.push({ ch, dp: false, colon: false });
+  }
+  while (cellsArr.length > cells) cellsArr.shift();
+  const off = cells - cellsArr.length;
+  st.digits.forEach((d, i) => {
+    const c = i >= off ? cellsArr[i - off] : { ch: " " };
+    const on = SEGS[c.ch] !== undefined ? SEGS[c.ch] : (SEGS[c.ch && c.ch.toUpperCase()] || "");
+    for (const k of "abcdefg") d[k].classList.toggle("on", on.includes(k));
+    d.dp.classList.toggle("on", !!c.dp);
+    d.colon.forEach(x => { x.style.display = c.colon ? "" : "none"; x.classList.toggle("on", !!c.colon); });
+  });
+}
+
+/* ------------------------------------------------------- formatting */
+const pad = (n, w = 2) => String(n).padStart(w, "0");
+function fmtAge(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 3600) return `${Math.floor(s / 60)}:${pad(s % 60)}`;
+  if (s < 100 * 3600) return `${Math.floor(s / 3600)}h${pad(Math.floor(s / 60) % 60)}`;
+  return `${Math.floor(s / 86400)}d`;
+}
+function fmtHms(ms) {
+  const s = Math.floor(ms / 1000);
+  return `${pad(Math.floor(s / 3600) % 100)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
+}
+function fmtUp(ms) {
+  const s = Math.floor(ms / 1000), d = Math.floor(s / 86400);
+  return d ? `${d}d ${pad(Math.floor(s / 3600) % 24)}:${pad(Math.floor(s / 60) % 60)}` : fmtHms(ms);
+}
+const kpa = psi => Math.round(psi * 6.894757);
+const psiStr = p => p >= 100 ? p.toFixed(0) : p.toFixed(1);
+
+/* ------------------------------------------------------------ state */
+let status = null, sensors = null;
+let devNow = 0, devNowAt = 0;          /* device uptime ms at performance.now() devNowAt */
+const deviceNow = () => devNow + (performance.now() - devNowAt);
+let lastGen = null, turboUntil = 0, scanFastUntil = 0;
+const lastSeen = new Map();            /* id -> last ms, to flash updated rows */
+const peak = { v: -120, t: 0 };
+let shown = -120;                      /* smoothed signal for the gauge */
+
+/* ---------------------------------------------------------- scanner */
+const scanCells = [];
+for (let i = 0; i < 16; i++) { const c = document.createElement("i"); $("scanner").appendChild(c); scanCells.push({ el: c, v: 0 }); }
+let scanPos = 0, scanDir = 1, scanLast = performance.now();
+
+/* ------------------------------------------------------------ voice */
+const voiceCols = [];
+[9, 13, 9].forEach(n => {
+  const col = document.createElement("div"); col.className = "col";
+  const cells = [];
+  for (let i = 0; i < n; i++) { const c = document.createElement("i"); col.appendChild(c); cells.push(c); }
+  $("voice").appendChild(col); voiceCols.push(cells);
+});
+function drawVoice(level) {   /* level 0..1 */
+  voiceCols.forEach((cells, ci) => {
+    const n = cells.length, mid = (n - 1) / 2;
+    const lit = Math.round(level * (ci === 1 ? 1 : 0.8) * (mid + 1));
+    cells.forEach((c, i) => c.classList.toggle("on", Math.abs(i - mid) < lit));
+  });
+}
+
+/* ------------------------------------------------------- tach gauge */
+const T_MIN = -110, T_MAX = -30, T_BARS = 40;
+const tachBars = [];
+(function buildTach() {
+  const svg = $("tach"), W = 600, H = 112, gap = 4, bw = (W - gap * (T_BARS - 1)) / T_BARS;
+  for (let i = 0; i < T_BARS; i++) {
+    const h = 10 + (H - 10) * Math.pow(i / (T_BARS - 1), 1.25);
+    const r = document.createElementNS(NS, "rect");
+    const frac = i / (T_BARS - 1);
+    const col = frac > 0.8 ? "var(--red)" : frac > 0.55 ? "var(--amber)" : "var(--green)";
+    r.setAttribute("x", i * (bw + gap)); r.setAttribute("y", H - h); r.setAttribute("width", bw); r.setAttribute("height", h);
+    r.setAttribute("rx", 1); r.setAttribute("class", "bar"); r.style.fill = col;
+    r.style.filter = `drop-shadow(0 0 3px ${col})`;
+    svg.appendChild(r); tachBars.push(r);
+  }
+  for (let db = T_MIN; db <= T_MAX; db += 10) {
+    const x = (db - T_MIN) / (T_MAX - T_MIN) * (W - bw) + bw / 2;
+    const t = document.createElementNS(NS, "text");
+    t.setAttribute("x", x); t.setAttribute("y", 128); t.setAttribute("text-anchor", "middle");
+    t.textContent = db;
+    svg.appendChild(t);
+  }
+  const mk = (id, color) => {
+    const m = document.createElementNS(NS, "path");
+    m.setAttribute("id", id); m.setAttribute("fill", color); m.setAttribute("d", "M-5 0 L5 0 L0 7 Z");
+    m.style.filter = `drop-shadow(0 0 3px ${color})`;
+    svg.appendChild(m); return m;
+  };
+  mk("mk-noise", "var(--amber)"); mk("mk-last", "var(--green)");
+})();
+const barIdx = db => Math.round((Math.min(T_MAX, Math.max(T_MIN, db)) - T_MIN) / (T_MAX - T_MIN) * (T_BARS - 1));
+function placeMarker(id, db) {
+  const x = (Math.min(T_MAX, Math.max(T_MIN, db)) - T_MIN) / (T_MAX - T_MIN) * (600 - 11.1) + 5.5;
+  $(id).setAttribute("transform", `translate(${x} 0)`);
+}
+
+/* ------------------------------------------------------ RF history */
+function drawHist() {
+  const cv = $("hist"), dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  const c = cv.getContext("2d");
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.clearRect(0, 0, w, h);
+  const lo = -100, hi = -30, y = db => h - 4 - (Math.min(hi, Math.max(lo, db)) - lo) / (hi - lo) * (h - 8);
+  c.font = "9px sans-serif"; c.fillStyle = "#555";
+  c.strokeStyle = "#2a2a2a"; c.setLineDash([2, 4]); c.lineWidth = 1;
+  for (const db of [-90, -75, -60, -45]) {
+    c.beginPath(); c.moveTo(0, y(db) + .5); c.lineTo(w, y(db) + .5); c.stroke();
+    c.fillText(db, 3, y(db) - 2);
+  }
+  c.setLineDash([]);
+  if (!status || !status.hist) return;
+  const hs = status.hist, n = 80, bw = w / n;
+  for (let i = 0; i < hs.length; i++) {
+    const db = hs[i], x = (n - hs.length + i) * bw, top = y(db);
+    const above = db - status.noise;
+    c.fillStyle = above > 20 ? "#ff2414" : above > 8 ? "#ffa21a" : "#36ff5e";
+    c.shadowColor = c.fillStyle; c.shadowBlur = 4;
+    c.fillRect(x + 1, top, Math.max(1, bw - 2), h - 4 - top);
+  }
+  c.shadowBlur = 0;
+  c.strokeStyle = "#ffa21a"; c.setLineDash([6, 3]);
+  c.beginPath(); c.moveTo(0, y(status.noise) + .5); c.lineTo(w, y(status.noise) + .5); c.stroke();
+  c.setLineDash([]);
+}
+
+/* --------------------------------------------------- tire positions */
+const POS = ["FL", "FR", "RL", "RR"];
+const POS_LONG = ["FRONT LEFT", "FRONT RIGHT", "REAR LEFT", "REAR RIGHT"];
+const tires = () => (status && status.tires) || ["", "", "", ""];
+const sensorById = id => (sensors && sensors.list.find(s => s.id === id)) || null;
+function renderTires() {
+  const now = deviceNow(), assigned = tires();
+  for (let i = 0; i < 4; i++) {
+    const el = $("tire" + i), id = assigned[i], s = id ? sensorById(id) : null, wheel = $("w" + i);
+    if (!el.dataset.built) {
+      el.innerHTML = `<div class="pos"><span></span><span class="mq"></span></div><div class="id"></div><div class="prow"><div class="seg green p"></div><span class="unit-psi">PSI</span></div><div class="meta"></div>`;
+      el.dataset.built = 1;
+      el.addEventListener("click", () => openTire({ pos: i }));
+    }
+    el.querySelector(".pos span").textContent = POS_LONG[i];
+    el.querySelector(".pos .mq").textContent = id && status && status.mqtt === 1 ? "MQTT" : "";
+    el.classList.toggle("empty", !id);
+    el.classList.toggle("unheard", !!id && !s);
+    el.classList.remove("moving", "learn", "flash");
+    if (!id) {
+      el.querySelector(".id").textContent = "UNASSIGNED";
+      seg(el.querySelector(".p"), "--.-", 4);
+      el.querySelector(".meta").innerHTML = "TAP TO ASSIGN";
+      wheel.style.fill = "#ff241411";
+      continue;
+    }
+    el.querySelector(".id").textContent = id.toUpperCase();
+    if (!s) {
+      seg(el.querySelector(".p"), "--.-", 4);
+      el.querySelector(".meta").innerHTML = "NOT HEARD";
+      wheel.style.fill = "#ff241433";
+      continue;
+    }
+    if (s.mode === "MOVING") el.classList.add("moving");
+    if (s.mode === "LEARN") el.classList.add("learn");
+    seg(el.querySelector(".p"), psiStr(s.psi), 4);
+    const age = now - s.last;
+    el.querySelector(".meta").innerHTML =
+      `TEMP <b>${s.temp === null ? "--" : s.temp + "&deg;C"}</b> &middot; <b>${kpa(s.psi)}</b> kPa<br>` +
+      `AGO <b>${fmtAge(age)}</b> &middot; <b>${s.rssi}</b> dBm`;
+    const fresh = age < 4000;
+    el.classList.toggle("flash", fresh && Math.floor(performance.now() / 250) % 2 === 0);
+    wheel.style.fill = fresh ? "#ff2414" : "#ff241466";
+  }
+  const n = assigned.filter(x => x).length;
+  $("scan-count").textContent = `${n} / 4 assigned`;
+}
+
+/* ---------------------------------------------------------- scan log */
+function renderLog() {
+  const tb = $("log"), list = sensors ? sensors.list : [];
+  const now = deviceNow();
+  $("log-empty").style.display = list.length ? "none" : "";
+  $("log-count").textContent = sensors ? `${list.length} of max ${sensors.max}` : "";
+  while (tb.rows.length > list.length) tb.deleteRow(-1);
+  list.forEach((s, i) => {
+    let tr = tb.rows[i];
+    if (!tr) {
+      tr = tb.insertRow();
+      ["", "l pos", "l id", "psi", "", "", "l", "l", "", "", "", "", "", ""].forEach(cls => { const td = tr.insertCell(); td.className = cls; });
+      tr.addEventListener("click", () => openTire({ id: tr.dataset.id }));
+    }
+    const last = s.wall ? s.wall.slice(11) : fmtHms(s.last);
+    tr.dataset.id = s.id;
+    const p = tires().indexOf(s.id);
+    const vals = [i + 1, p < 0 ? "--" : POS[p], s.id, s.psi.toFixed(2), kpa(s.psi), s.temp === null ? "--" : s.temp + "C", s.mode, s.code,
+                  s.flags, s.rssi, s.bursts, s.pkts, last, fmtAge(now - s.last)];
+    vals.forEach((v, k) => { const td = tr.cells[k]; v = String(v); if (td.textContent !== v) td.textContent = v; });
+    tr.cells[6].className = "l mode-" + s.mode;
+    tr.title = s.wall ? `last ${s.wall}, first heard ${fmtAge(now - s.first)} ago` : `first heard ${fmtAge(now - s.first)} ago`;
+    const prev = lastSeen.get(s.id);
+    if (prev !== undefined && prev !== s.last) { tr.classList.remove("fresh"); void tr.offsetWidth; tr.classList.add("fresh"); }
+  });
+  list.forEach(s => lastSeen.set(s.id, s.last));
+}
+
+/* ----------------------------------------------------------- status */
+function onStatus(m) {
+  status = m;
+  devNow = m.now; devNowAt = performance.now();
+  if (m.rssi > peak.v || performance.now() - peak.t > 1500) { peak.v = m.rssi; peak.t = performance.now(); }
+  $("freq").textContent = (m.freq / 1e6).toFixed(3) + " MHz";
+  $("rfcfg").textContent = `BW ${(m.bw / 1000).toFixed(1)} kHz · LNA G${m.lna}`;
+  $("host").textContent = `${m.host.toUpperCase()} · ${m.ip}`;
+  $("clock").textContent = m.time || ("UPTIME " + fmtUp(m.now));
+  seg("noise", m.noise, 4);
+  seg("lastrssi", m.decoded ? m.last_rssi : "----", 4);
+  placeMarker("mk-noise", m.noise);
+  placeMarker("mk-last", m.decoded ? m.last_rssi : T_MIN - 10);
+  $("mk-last").style.display = m.decoded ? "" : "none";
+  const bad = m.err_manchester + m.err_checksum + m.err_flags;
+  seg("t-syncs", m.syncs, 7); seg("t-payloads", m.payloads, 7); seg("t-decoded", m.decoded, 7); seg("t-bad", bad, 7);
+  seg("t-em", m.err_manchester, 7); seg("t-ec", m.err_checksum, 7); seg("t-ef", m.err_flags, 7); seg("t-ovr", m.overruns, 7);
+  seg("t-ids", m.ids, 7);
+  seg("t-best", m.decoded ? m.best_rssi : "----", 7); seg("t-worst", m.decoded ? m.worst_rssi : "----", 7);
+  seg("t-lastpkt", m.decoded ? fmtAge(m.now - m.last_decode).replace("h", ".") : "--:--", 7);
+  seg("t-up", fmtUp(m.now).replace(/^(\d+)d /, "$1."), 7);
+  seg("t-batt", m.batt > 0 ? (m.batt / 1000).toFixed(2) : "----", 7);
+  seg("t-wifi", m.wifi_rssi || "----", 7);
+  seg("t-mqtt", m.mqtt < 0 ? "OFF" : m.mqtt_pub, 7);
+  $("uptime-lbl").textContent = `heap ${(m.heap / 1024).toFixed(0)}k · ${m.clients} viewer${m.clients === 1 ? "" : "s"}`;
+  $("b-wifi").classList.toggle("on", !!m.ip);
+  $("b-mqtt").classList.toggle("on", m.mqtt === 1);
+  $("b-mqtt").title = m.mqtt < 0 ? "MQTT disabled" : m.mqtt ? "connected" : "disconnected";
+  $("b-ntp").classList.toggle("on", !!m.time);
+  $("b-batt").classList.toggle("on", m.batt > 0);
+  if (lastGen !== null && m.gen !== lastGen) { turboUntil = performance.now() + 1500; scanFastUntil = performance.now() + 3000; }
+  lastGen = m.gen;
+  drawHist();
+}
+function onSensors(m) {
+  sensors = m;
+  devNow = m.now; devNowAt = performance.now();
+  renderLog(); renderTires();
+}
+
+/* ------------------------------------------------- websocket + heartbeat */
+/*
+ * Link watchdog. An OPEN socket that goes quiet (no status for DEAD_MS despite
+ * pings) is half-open: drop it and reconnect. A CONNECTING socket is given
+ * CONNECT_MS from the start of that attempt. Browsers (Firefox especially)
+ * hold reconnects to a host that recently failed in CONNECTING on purpose, so
+ * cancelling them early would only lengthen that delay.
+ */
+let ws = null, lastRx = 0, connectAt = 0, retryMs = 1000, retryTimer = null;
+const HEARTBEAT_MS = 2000, DEAD_MS = 6000, CONNECT_MS = 20000;
+function setLink(ok) {
+  $("lost").classList.toggle("show", !ok);
+  $("dash").classList.toggle("stale", !ok);
+  $("b-cruise").classList.toggle("on", ok);
+  $("b-scan").classList.toggle("on", ok);
+}
+function drop(sock) {   /* abandon a socket without its handlers firing a second reconnect */
+  sock.onopen = sock.onmessage = sock.onclose = sock.onerror = null;
+  try { sock.close(); } catch (e) {}
+}
+function connect() {
+  clearTimeout(retryTimer);
+  retryTimer = null;
+  if (ws) drop(ws);
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
+  let sock;
+  try { sock = new WebSocket(url); } catch (e) { ws = null; scheduleReconnect(); return; }
+  ws = sock;
+  connectAt = performance.now();
+  sock.onopen = () => { lastRx = performance.now(); retryMs = 1000; setLink(true); sock.send("sensors"); };
+  sock.onmessage = ev => {
+    lastRx = performance.now();
+    let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.t === "status") { onStatus(m); if (m.sensors) onSensors(m.sensors); }
+    else if (m.t === "sensors") onSensors(m);
+    else if (m.t === "pong") { const hb = $("hb"); hb.classList.add("on"); setTimeout(() => hb.classList.remove("on"), 150); }
+  };
+  sock.onclose = () => { if (ws !== sock) return; ws = null; setLink(false); scheduleReconnect(); };
+  sock.onerror = () => {};   /* always followed by onclose */
+}
+function scheduleReconnect() {
+  if (retryTimer) return;
+  retryTimer = setTimeout(connect, retryMs);
+  retryMs = Math.min(retryMs * 2, 10000);
+}
+setInterval(() => {
+  if (!ws) return;
+  const now = performance.now();
+  if (ws.readyState === WebSocket.OPEN) {
+    if (now - lastRx > DEAD_MS) {   /* half-open socket: give up on it */
+      drop(ws); ws = null;
+      setLink(false); scheduleReconnect();
+      return;
+    }
+    ws.send("ping");
+  } else if (ws.readyState === WebSocket.CONNECTING && now - connectAt > CONNECT_MS) {
+    drop(ws); ws = null;
+    scheduleReconnect();
+  }
+}, HEARTBEAT_MS);
+document.addEventListener("visibilitychange", () => {
+  /* back in view while waiting to retry: try now instead of after the backoff */
+  if (document.visibilityState === "visible" && !ws) { retryMs = 1000; connect(); }
+});
+
+/* ------------------------------------------------------------ modals */
+async function post(url, data) {
+  const r = await fetch(url, { method: "POST", body: new URLSearchParams(data) });
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+}
+function msg(id, text, ok) { const e = $(id); e.textContent = text || ""; e.classList.toggle("ok", !!ok); }
+async function run(errId, fn, closeDlg) {
+  msg(errId, "TRANSMITTING\u2026", true);
+  try { await fn(); msg(errId, "CONFIRMED", true); if (closeDlg) setTimeout(() => closeDlg.close(), 350); }
+  catch (e) { msg(errId, String(e.message || e).toUpperCase()); }
+}
+document.addEventListener("keydown", e => { if (e.key === "Enter" && e.target.matches("dialog input")) e.preventDefault(); });
+
+/* tire assignment */
+let tireSel = -1, tirePaintKey = "";
+function tirePaint() {
+  const assigned = tires();
+  document.querySelectorAll("#t-pos .posbtn").forEach(b => {
+    const p = +b.dataset.pos;
+    b.classList.toggle("sel", p === tireSel);
+    b.querySelector("b").textContent = assigned[p] || "------";
+  });
+  const cur = $("t-id").value.trim().toLowerCase();
+  const list = sensors ? sensors.list : [];
+  const chips = $("t-chips");
+  chips.innerHTML = "";
+  if (!list.length) chips.innerHTML = '<span class="m-note">NONE YET</span>';
+  list.forEach(s => {
+    const c = document.createElement("span"), p = assigned.indexOf(s.id);
+    c.className = "chip" + (s.id === cur ? " sel" : "") + (p >= 0 ? " taken" : "");
+    c.innerHTML = `${s.id}<small>${psiStr(s.psi)} PSI \u00b7 ${fmtAge(deviceNow() - s.last)}${p >= 0 ? " \u00b7 " + POS[p] : ""}</small>`;
+    c.addEventListener("click", () => { $("t-id").value = s.id; tirePaint(); });
+    chips.appendChild(c);
+  });
+  $("t-clear").disabled = tireSel < 0;
+}
+function openTire({ pos, id }) {
+  const assigned = tires();
+  if (pos === undefined) pos = id ? assigned.indexOf(id) : -1;
+  tireSel = pos;
+  $("t-id").value = id || (pos >= 0 ? assigned[pos] : "");
+  msg("t-err", "");
+  tirePaint();
+  $("dlg-tire").showModal();
+}
+document.querySelectorAll("#t-pos .posbtn").forEach(b => b.addEventListener("click", () => {
+  tireSel = +b.dataset.pos;
+  if (!$("t-id").value.trim()) $("t-id").value = tires()[tireSel] || "";
+  tirePaint();
+}));
+$("t-id").addEventListener("input", tirePaint);
+$("t-save").addEventListener("click", () => {
+  const id = $("t-id").value.trim().toLowerCase();
+  if (tireSel < 0) return msg("t-err", "SELECT A WHEEL POSITION");
+  if (!/^[0-9a-f]{1,8}$/.test(id) || /^0+$/.test(id)) return msg("t-err", "SENSOR ID MUST BE 1-8 HEX DIGITS");
+  run("t-err", () => post("/api/tire", { pos: POS[tireSel], id: id.padStart(8, "0") }), $("dlg-tire"));
+});
+$("t-clear").addEventListener("click", () => {
+  if (tireSel < 0) return;
+  run("t-err", () => post("/api/tire", { pos: POS[tireSel], id: "" }), $("dlg-tire"));
+});
+
+/* radio */
+(function fillBw() {   /* the bandwidths the SX1278 supports: 32 MHz / (mant * 2^(exp+2)) */
+  const bws = [];
+  for (let e = 1; e <= 7; e++) for (const m of [16, 20, 24]) bws.push(32e6 / (m * Math.pow(2, e + 2)));
+  bws.sort((a, b) => a - b).forEach(hz => {
+    const o = document.createElement("option");
+    o.value = (hz / 1000).toFixed(1); o.textContent = "\u00b1" + (hz / 1000).toFixed(1);
+    $("r-bw").appendChild(o);
+  });
+})();
+function openRadio() {
+  if (!status) return;
+  $("r-freq").value = (status.freq / 1e6).toFixed(3);
+  $("r-bw").value = (status.bw / 1000).toFixed(1);
+  $("r-lna").value = status.lna;
+  $("r-sync").value = status.sync;
+  $("r-bitrate").value = status.bitrate;
+  msg("r-err", "");
+  $("dlg-radio").showModal();
+}
+$("open-radio").addEventListener("click", openRadio);
+$("r-save").addEventListener("click", () => {
+  if (!$("f-radio").reportValidity()) return;
+  run("r-err", () => post("/api/radio", { freq: $("r-freq").value, bw: $("r-bw").value, lna: $("r-lna").value,
+                                          sync: $("r-sync").value, bitrate: $("r-bitrate").value }), $("dlg-radio"));
+});
+$("r-defaults").addEventListener("click", () => run("r-err", async () => {
+  await post("/api/radio", { defaults: 1 });
+  $("r-freq").value = "315.000"; $("r-bw").value = "83.3"; $("r-lna").value = 1; $("r-sync").value = "5556"; $("r-bitrate").value = 19231;
+}));
+
+/* display */
+function dispPaint() {
+  $("d-bright-v").textContent = $("d-bright").value;
+  $("d-dim-v").textContent = $("d-dim").value;
+}
+function openDisplay() {
+  if (!status || !status.disp) return;
+  const d = status.disp;
+  $("d-bright").value = d.bright; $("d-dim").value = d.dim; $("d-dim-after").value = d.dim_after; $("d-shift").value = d.shift;
+  $("d-state").textContent = d.present ? `Now: ${d.screen} screen, ${d.dimmed ? "dimmed" : "bright"}.` : "OLED not detected.";
+  dispPaint(); msg("d-err", "");
+  $("dlg-display").showModal();
+}
+$("open-display").addEventListener("click", openDisplay);
+["d-bright", "d-dim"].forEach(id => $(id).addEventListener("input", dispPaint));
+$("d-save").addEventListener("click", () => {
+  if (!$("f-display").reportValidity()) return;
+  run("d-err", () => post("/api/display", { bright: $("d-bright").value, dim: $("d-dim").value,
+                                            dim_after: $("d-dim-after").value, shift: $("d-shift").value }), $("dlg-display"));
+});
+$("d-defaults").addEventListener("click", () => run("d-err", async () => {
+  await post("/api/display", { defaults: 1 });
+  $("d-bright").value = 143; $("d-dim").value = 1; $("d-dim-after").value = 120; $("d-shift").value = 30; dispPaint();
+}));
+$("d-wake").addEventListener("click", () => run("d-err", () => post("/api/display", { wake: 1 })));
+
+/* ------------------------------------------------------- animation loop */
+let lastSecond = 0;
+function frame(t) {
+  /* scanner: KITT sweep, faster after a new packet */
+  const dt = t - scanLast; scanLast = t;
+  const speed = (t < scanFastUntil ? 34 : 16) * ((ws && ws.readyState === 1) ? 1 : 0.3);
+  scanPos += scanDir * speed * dt / 1000;
+  if (scanPos >= 15) { scanPos = 15; scanDir = -1; } else if (scanPos <= 0) { scanPos = 0; scanDir = 1; }
+  const head = Math.round(scanPos);
+  scanCells.forEach((c, i) => {
+    c.v = i === head ? 1 : Math.max(0.06, c.v - dt / 380);
+    c.el.style.opacity = c.v.toFixed(2);
+    c.el.style.boxShadow = c.v > .6 ? `0 0 ${Math.round(14 * c.v)}px var(--red)` : "none";
+  });
+  document.querySelector("#carscan").setAttribute("transform", `translate(0 ${(head / 15) * 216})`);
+
+  if (status) {
+    const target = Math.max(status.rssi, performance.now() - peak.t < 400 ? peak.v : -200);
+    shown += (target - shown) * Math.min(1, dt / 90);
+    const lit = barIdx(shown), pk = barIdx(peak.v);
+    tachBars.forEach((b, i) => b.classList.toggle("on", i <= lit || i === pk));
+    seg("sig", Math.round(shown), 4);
+    const lvl = Math.max(0, Math.min(1, (shown - status.noise) / 35));
+    drawVoice(Math.max(lvl, 0.08 + 0.06 * Math.sin(t / 140)));
+    $("b-pursuit").classList.toggle("on", !!(sensors && sensors.list.some(s => s.mode === "MOVING" && deviceNow() - s.last < 60000)));
+  }
+  $("b-turbo").classList.toggle("on", t < turboUntil && Math.floor(t / 120) % 2 === 0);
+
+  if (t - lastSecond > 250) {
+    lastSecond = t;
+    if (sensors) { renderTires(); renderLog(); }
+    /* repaint the open tire dialog only when the data changes, so clicks on chips aren't lost */
+    const key = JSON.stringify([tires(), sensors && sensors.gen]);
+    if ($("dlg-tire").open && key !== tirePaintKey) { tirePaintKey = key; tirePaint(); }
+  }
+  requestAnimationFrame(frame);
+}
+seg("sig", "----", 4); seg("noise", "----", 4); seg("lastrssi", "----", 4);
+renderTires(); renderLog(); setLink(false); drawHist();
+window.addEventListener("resize", drawHist);
+connect();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

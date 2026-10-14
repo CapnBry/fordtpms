@@ -13,3 +13,12 @@ CONFIG_FREERTOS_HZ=1000
 
 # CPU frequency scaling (configured in app_main)
 CONFIG_PM_ENABLE=y
+
+# Two 1700 KB OTA app slots: Wi-Fi + web UI + MQTT need more than 1 MB, and the
+# second slot leaves room to add OTA updates without repartitioning. NVS stays
+# at 0x9000 (24 KB), so saved settings survive the change.
+CONFIG_PARTITION_TABLE_TWO_OTA_LARGE=y
+
+# Web UI live updates
+CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT=y

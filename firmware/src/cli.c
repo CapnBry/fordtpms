@@ -15,9 +15,12 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ha_mqtt.h"
+#include "net.h"
 #include "radio.h"
 #include "sensors.h"
 #include "ui.h"
+#include "web.h"
 
 static const char *sync_name(radio_sync_mode_t s)
 {
@@ -55,7 +58,11 @@ static int cmd_metrics(int argc, char **argv)
     printf("uptime        %s\n", up);
     printf("heap free     %u (min %u)\n", (unsigned)esp_get_free_heap_size(),
            (unsigned)esp_get_minimum_free_heap_size());
-    printf("wifi          off (not initialised)\n");
+    net_status_t ns;
+    net_get_status(&ns);
+    if (!ns.enabled) printf("wifi          off (no SSID in wifi_config.h)\n");
+    else if (!ns.connected) printf("wifi          connecting to \"%s\"\n", ns.ssid);
+    else printf("wifi          %s, %d dBm, http://%s/ (%s.local)\n", ns.ip, ns.rssi_dbm, ns.ip, ns.hostname);
     printf("battery       %d mV\n", app_battery_mv());
     printf("--- radio (SX1278 v0x%02x) ---\n", rs.version);
     printf("frequency     %.3f MHz\n", rc.freq_hz / 1e6);
@@ -133,12 +140,88 @@ static int cmd_sensors(int argc, char **argv)
     return 0;
 }
 
+/* --------------------------------------------------------------- wifi -- */
+
+static int cmd_wifi(int argc, char **argv)
+{
+    net_status_t ns;
+    ha_mqtt_status_t ms;
+    net_get_status(&ns);
+    ha_mqtt_get_status(&ms);
+    if (!ns.enabled) {
+        printf("wifi off: no SSID in wifi_config.h\n");
+        return 0;
+    }
+    printf("ssid          %s\n", ns.ssid);
+    printf("state         %s\n", ns.connected ? "connected" : "connecting");
+    printf("hostname      %s (mDNS %s.local)\n", ns.hostname, ns.hostname);
+    if (ns.connected) {
+        printf("ip            %s\n", ns.ip);
+        printf("ap rssi       %d dBm\n", ns.rssi_dbm);
+        printf("web ui        http://%s/  (%d live clients)\n", ns.ip, web_client_count());
+    }
+    printf("reconnects    %u\n", (unsigned)ns.reconnects);
+    char t[24];
+    net_fmt_time(t, sizeof(t), net_wall_time(0));
+    printf("time          %s\n", t[0] ? t : "not synced");
+    if (!ms.enabled) printf("mqtt          off (no MQTT_HOST)\n");
+    else
+        printf("mqtt          %s %s, %u published, %u connects\n", ms.uri,
+               ms.connected ? "connected" : "disconnected", (unsigned)ms.published, (unsigned)ms.connects);
+    return 0;
+}
+
+/* -------------------------------------------------------------- tires -- */
+
+static int cmd_tires(int argc, char **argv)
+{
+    if (argc == 3) {
+        int pos = tires_parse(argv[1]);
+        char *end;
+        uint32_t id = strtoul(argv[2], &end, 16);
+        if (pos < 0) {
+            printf("position must be fl, fr, rl or rr\n");
+            return 1;
+        }
+        if (!strcmp(argv[2], "clear") || !strcmp(argv[2], "none")) id = TIRE_NONE;
+        else if (*end || strlen(argv[2]) > 8 || id == TIRE_NONE) {
+            printf("id must be 1-8 hex digits, or 'clear'\n");
+            return 1;
+        }
+        app_assign_tire((tire_pos_t)pos, id);
+    } else if (argc != 1) {
+        printf("usage: tires [fl|fr|rl|rr <id|clear>]\n");
+        return 1;
+    }
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    for (int pos = 0; pos < TIRE_COUNT; pos++) {
+        uint32_t id = tires_get(pos);
+        sensor_entry_t e;
+        printf("%-2s %-11s ", tires_short_name(pos), tires_long_name(pos));
+        if (id == TIRE_NONE) printf("(none)\n");
+        else if (!sensors_get(id, &e)) printf("%08x  not heard since boot\n", (unsigned)id);
+        else {
+            char age[12];
+            ui_fmt_age(age, sizeof(age), now - e.last_ms);
+            printf("%08x  %6.2f PSI  %s ago\n", (unsigned)id, e.pkt.psi_x4 / 4.0, age);
+        }
+    }
+    printf("assigned IDs are published over MQTT; saved in flash\n");
+    return 0;
+}
+
 /* -------------------------------------------------------------- radio -- */
 
 static int cmd_radio(int argc, char **argv)
 {
     radio_config_t c;
     radio_get_config(&c);
+    if (argc == 2 && !strcmp(argv[1], "defaults")) {
+        radio_default_config(&c);
+        app_set_radio(&c);
+        printf("radio settings reset to defaults\n");
+        return 0;
+    }
     if (argc == 1) {
         printf("freq %.3f MHz, bitrate %u, bw %u Hz, lna %u, sync %s\n", c.freq_hz / 1e6, (unsigned)c.bitrate,
                (unsigned)c.rxbw_hz, c.lna_gain, sync_name(c.sync));
@@ -164,7 +247,7 @@ static int cmd_radio(int argc, char **argv)
         printf("expected <key> <value> pairs\n");
         return 1;
     }
-    esp_err_t err = radio_set_config(&c);
+    esp_err_t err = app_set_radio(&c);
     if (err != ESP_OK) {
         printf("invalid: %s\n", esp_err_to_name(err));
         return 1;
@@ -191,6 +274,58 @@ static int cmd_raw(int argc, char **argv)
         return 1;
     }
     radio_set_raw_log(!strcmp(argv[1], "on"));
+    return 0;
+}
+
+/* -------------------------------------------------------------- rflog -- */
+
+static void fmt_when(char *buf, size_t len, uint32_t ms)
+{
+    char wall[24], up[24];
+    net_fmt_time(wall, sizeof(wall), net_wall_time(ms));
+    fmt_uptime(up, sizeof(up), ms);
+    snprintf(buf, len, "%s", wall[0] ? wall : up);
+}
+
+static int cmd_rflog(int argc, char **argv)
+{
+    if (argc > 1 && !strcmp(argv[1], "clear")) {
+        radio_clear_log();
+        printf("RF log cleared\n");
+        return 0;
+    }
+    static radio_event_t ev[RADIO_EVENTS];
+    static radio_capture_t cap[RADIO_CAPTURES];
+    uint32_t ev_total, cap_total;
+    int ne = radio_get_events(ev, RADIO_EVENTS, &ev_total);
+    int nc = radio_get_captures(cap, RADIO_CAPTURES, &cap_total);
+    char when[24];
+
+    printf("RF events (peak >= noise + %d dB), %u since boot, last %d:\n", RADIO_EVENT_DB, (unsigned)ev_total, ne);
+    printf("%-19s %6s %5s %5s %5s %5s %5s\n", "start", "dur ms", "peak", "noise", "syncs", "pays", "dec");
+    for (int i = 0; i < ne; i++) {
+        fmt_when(when, sizeof(when), ev[i].start_ms);
+        printf("%-19s %6u %5d %5d %5u %5u %5u\n", when, (unsigned)(ev[i].end_ms - ev[i].start_ms), ev[i].peak_dbm,
+               ev[i].noise_dbm, ev[i].syncs, ev[i].payloads, ev[i].decoded);
+    }
+    static radio_event_t top[RADIO_TOP_EVENTS];
+    int nt = radio_get_top_events(top, RADIO_TOP_EVENTS);
+    printf("\nStrongest %d events since boot:\n", nt);
+    for (int i = 0; i < nt; i++) {
+        fmt_when(when, sizeof(when), top[i].start_ms);
+        printf("%-19s %6u %5d %5d %5u %5u %5u\n", when, (unsigned)(top[i].end_ms - top[i].start_ms),
+               top[i].peak_dbm, top[i].noise_dbm, top[i].syncs, top[i].payloads, top[i].decoded);
+    }
+    printf("\nStrong payloads (sync RSSI >= noise + %d dB), %u since boot, last %d:\n", RADIO_CAPTURE_DB,
+           (unsigned)cap_total, nc);
+    for (int i = 0; i < nc; i++) {
+        char hex[2 * RADIO_CAPTURE_MAX + 1];
+        for (int k = 0; k < cap[i].len; k++) sprintf(hex + 2 * k, "%02x", cap[i].data[k]);
+        fmt_when(when, sizeof(when), cap[i].ms);
+        printf("%-19s %4d dBm (noise %d) %-10s %s\n", when, cap[i].rssi_dbm, cap[i].noise_dbm,
+               tpms_ford_status_str((tpms_ford_status_t)cap[i].status), hex);
+    }
+    printf("(also at http://<ip>/api/rflog)\n");
     return 0;
 }
 
@@ -242,6 +377,12 @@ static int cmd_display(int argc, char **argv)
                (unsigned)s.shift_period_s);
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "defaults")) {
+        display_default_settings(&s);
+        app_set_display(&s);
+        printf("display settings reset to defaults\n");
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "wake")) {
         display_poke();
         return 0;
@@ -257,7 +398,7 @@ static int cmd_display(int argc, char **argv)
             return 1;
         }
     }
-    display_set_settings(&s);
+    app_set_display(&s);
     return 0;
 }
 
@@ -288,10 +429,10 @@ static int cmd_screen(int argc, char **argv)
 
 static int cmd_tasks(int argc, char **argv)
 {
-    const char *names[] = {"radio", "display", "IDLE0", "IDLE1"};
+    const char *names[] = {"radio", "display", "web", "httpd", "mqtt_task", "IDLE0", "IDLE1"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         TaskHandle_t t = xTaskGetHandle(names[i]);
-        if (t) printf("%-8s stack free %u\n", names[i], (unsigned)uxTaskGetStackHighWaterMark(t));
+        if (t) printf("%-10s stack free %u\n", names[i], (unsigned)uxTaskGetStackHighWaterMark(t));
     }
     return 0;
 }
@@ -310,15 +451,22 @@ esp_err_t cli_start(void)
         {.command = "stats", .help = "Alias for metrics", .hint = "[reset]", .func = cmd_metrics},
         {.command = "sensors", .help = "Table of the last 20 unique sensor IDs and their latest values",
          .hint = "[clear]", .func = cmd_sensors},
-        {.command = "radio", .help = "Show or set radio: radio freq 315.0 bw 83.3 lna 1 sync 5556 bitrate 19231",
-         .hint = "[freq MHz] [bw kHz] [lna 1-6] [sync 5556|aaa9|5555] [bitrate cps]", .func = cmd_radio},
+        {.command = "tires", .help = "Show or assign sensor IDs to wheels (only assigned IDs go to MQTT)",
+         .hint = "[fl|fr|rl|rr <id|clear>]", .func = cmd_tires},
+        {.command = "wifi", .help = "Wi-Fi, web UI, time and MQTT status", .func = cmd_wifi},
+        {.command = "radio",
+         .help = "Show or set radio (saved): radio freq 315.0 bw 83.3 lna 1 sync 5556 bitrate 19231 | defaults",
+         .hint = "[freq MHz] [bw kHz] [lna 1-6] [sync 5556|aaa9|5555] [bitrate cps] | defaults", .func = cmd_radio},
+        {.command = "rflog", .help = "RF energy events and strong raw payloads (reception diagnostics)",
+         .hint = "[clear]", .func = cmd_rflog},
         {.command = "regs", .help = "Dump SX1278 registers", .func = cmd_regs},
         {.command = "probe", .help = "Identify SX1278 DIO/RESET wiring", .func = cmd_probe},
         {.command = "raw", .help = "Log every raw payload (hex) at INFO", .hint = "on|off", .func = cmd_raw},
         {.command = "inject", .help = "Feed a packet through the pipeline (default: rtl_433 sample)",
          .hint = "[hex bytes] [rssi]", .func = cmd_inject},
-        {.command = "display", .help = "Show or set display: display bright 143 dim 1 dim_after 120 shift 30 | wake",
-         .hint = "[bright n] [dim n] [dim_after s] [shift s] | wake", .func = cmd_display},
+        {.command = "display",
+         .help = "Show or set display (saved): display bright 143 dim 1 dim_after 120 shift 30 | wake | defaults",
+         .hint = "[bright n] [dim n] [dim_after s] [shift s] | wake | defaults", .func = cmd_display},
         {.command = "loglevel", .help = "Set log level for a tag", .hint = "<tag|*> <level>", .func = cmd_loglevel},
         {.command = "screen", .help = "Print the current OLED frame as text", .func = cmd_screen},
         {.command = "tasks", .help = "Task stack headroom", .func = cmd_tasks},

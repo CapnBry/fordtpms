@@ -2,7 +2,8 @@
  * SX1278 in FSK packet mode as a Ford TPMS receiver.
  *
  * The packet engine does the hard real-time work: bit synchronisation at
- * 19.23 kchip/s, sync-word match on the last 16 preamble chips (0x5556), and a
+ * 19.23 kchip/s, sync-word match on 0x5556 (12 preamble chips + the "0110"
+ * start delimiter, see tpms_ford.h), and a
  * fixed 16 byte payload = the 128 Manchester chips of one packet. DIO2 fires
  * on sync (we latch RSSI there), DIO0 on PayloadReady.
  */
@@ -46,6 +47,43 @@ typedef struct {
     uint8_t  version;         /* RegVersion, 0x12 for SX1278 */
 } radio_stats_t;
 
+/*
+ * Reception diagnostics, kept in RAM:
+ *  - RF events: runs of 250 ms windows whose peak RSSI is at least
+ *    RADIO_EVENT_DB above the noise floor, with the sync/payload/decode counts
+ *    seen during the run. A strong event with no syncs points at polarity or
+ *    frequency; syncs without decodes at timing/deviation.
+ *  - Captures: raw payloads whose sync RSSI was at least RADIO_CAPTURE_DB above
+ *    the noise floor (decoded or not), for offline analysis.
+ */
+#define RADIO_EVENT_DB    12   /* +10 caught noise peaks ~9x/min */
+#define RADIO_EVENTS      48
+#define RADIO_TOP_EVENTS  16   /* strongest since boot, kept however many weak ones follow */
+#define RADIO_CAPTURE_DB  6
+#define RADIO_CAPTURES    24
+#define RADIO_CAPTURE_MAX 24   /* bytes: the longest payload (sync 5555) */
+
+typedef struct {
+    uint32_t start_ms, end_ms;
+    int8_t   peak_dbm, noise_dbm;
+    uint16_t syncs, payloads, decoded;
+} radio_event_t;
+
+typedef struct {
+    uint32_t ms;
+    int8_t   rssi_dbm, noise_dbm;
+    uint8_t  status;          /* tpms_ford_status_t */
+    uint8_t  len;
+    uint8_t  data[RADIO_CAPTURE_MAX];
+} radio_capture_t;
+
+/* Oldest first. `total` (optional) counts all recorded since boot/clear. */
+int radio_get_events(radio_event_t *out, int max, uint32_t *total);
+/* The RADIO_TOP_EVENTS strongest finished events since boot/clear, oldest first. */
+int radio_get_top_events(radio_event_t *out, int max);
+int radio_get_captures(radio_capture_t *out, int max, uint32_t *total);
+void radio_clear_log(void);
+
 /* Called from the radio task for each valid packet. */
 typedef void (*radio_packet_cb_t)(const tpms_ford_t *pkt, int rssi_dbm, uint32_t ms);
 
@@ -54,6 +92,7 @@ void radio_get_stats(radio_stats_t *out);
 void radio_reset_stats(void);
 void radio_get_config(radio_config_t *out);
 esp_err_t radio_set_config(const radio_config_t *cfg);   /* reprograms the chip */
+void radio_default_config(radio_config_t *out);
 
 /* Noise floor history for the idle screen, one sample per ~250 ms. */
 int radio_rssi_history(int8_t *out, int max);

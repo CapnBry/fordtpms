@@ -12,6 +12,7 @@
 #include "gfx.h"
 #include "radio.h"
 #include "sensors.h"
+#include "tires.h"
 #include "ui.h"
 
 static const char *TAG = "display";
@@ -21,12 +22,13 @@ static const char *TAG = "display";
 static i2c_master_dev_handle_t s_dev;
 static gfx_t s_gfx;
 static uint8_t s_txbuf[1 + GFX_FB_SIZE];
-static display_settings_t s_set = {
+static const display_settings_t k_default_set = {
     .bright = 0x8f,
     .dim = 0x01,
     .dim_after_s = 120,
     .shift_period_s = 30,
 };
+static display_settings_t s_set = k_default_set;
 static display_status_t s_status;
 static volatile uint32_t s_activity_ms;
 
@@ -96,6 +98,23 @@ static void shift_for_step(uint32_t step, int *ox, int *oy)
     *ox = (row % 2) ? nx - 1 - col : col;
 }
 
+static ui_sensor_t to_ui(const sensor_entry_t *e)
+{
+    return (ui_sensor_t){
+        .id = e->pkt.id,
+        .psi_x4 = e->pkt.psi_x4,
+        .temp_valid = e->pkt.temp_valid,
+        .temp_c = e->pkt.temp_c,
+        .mode = e->pkt.mode,
+        .code = e->pkt.code,
+        .flags = e->pkt.flags,
+        .rssi_dbm = e->rssi_best_dbm,
+        .count = e->bursts,
+        .last_ms = e->last_ms,
+        .wheel = (uint8_t)(tires_find(e->pkt.id) + 1),
+    };
+}
+
 static void build_model(ui_model_t *m, uint32_t now)
 {
     static sensor_entry_t snap[SENSORS_MAX];
@@ -124,20 +143,21 @@ static void build_model(ui_model_t *m, uint32_t now)
     int n = sensors_snapshot(snap, SENSORS_MAX);
     m->nsensors = n;
     m->nshown = n < UI_MAX_WHEELS ? n : UI_MAX_WHEELS;
-    for (int i = 0; i < m->nshown; i++) {
-        const sensor_entry_t *e = &snap[i];
-        m->s[i] = (ui_sensor_t){
-            .id = e->pkt.id,
-            .psi_x4 = e->pkt.psi_x4,
-            .temp_valid = e->pkt.temp_valid,
-            .temp_c = e->pkt.temp_c,
-            .mode = e->pkt.mode,
-            .code = e->pkt.code,
-            .flags = e->pkt.flags,
-            .rssi_dbm = e->rssi_best_dbm,
-            .count = e->bursts,
-            .last_ms = e->last_ms,
-        };
+    for (int i = 0; i < m->nshown; i++) m->s[i] = to_ui(&snap[i]);
+
+    /* Wheel assignments for the overview (searched over the whole table). */
+    for (int w = 0; w < UI_MAX_WHEELS && w < TIRE_COUNT; w++) {
+        uint32_t id = tires_get(w);
+        m->wheel[w].id = id;
+        if (id == TIRE_NONE) continue;
+        m->wheels_assigned = true;
+        for (int i = 0; i < n; i++) {
+            if (snap[i].pkt.id == id) {
+                m->wheel[w].s = to_ui(&snap[i]);
+                m->wheel[w].heard = true;
+                break;
+            }
+        }
     }
 }
 
@@ -253,6 +273,11 @@ void display_set_settings(const display_settings_t *in)
 {
     s_set = *in;
     if (s_status.present) set_contrast(s_status.dimmed ? s_set.dim : s_set.bright);
+}
+
+void display_default_settings(display_settings_t *out)
+{
+    *out = k_default_set;
 }
 
 void display_get_status(display_status_t *out)

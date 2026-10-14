@@ -1,6 +1,7 @@
 /*
- * Ford TPMS receiver: SX1278 @ 315 MHz FSK -> decoder -> SSD1306 + CLI.
- * Wi-Fi/BT are never initialised, so the 2.4 GHz radio stays off.
+ * Ford TPMS receiver: SX1278 @ 315 MHz FSK -> decoder -> SSD1306 + CLI,
+ * plus Wi-Fi web UI and MQTT when wifi_config.h has an SSID. BT is never
+ * initialised.
  */
 #include <stdio.h>
 
@@ -13,8 +14,12 @@
 #include "esp_log.h"
 #include "esp_pm.h"
 #include "esp_timer.h"
+#include "ha_mqtt.h"
+#include "net.h"
 #include "radio.h"
 #include "sensors.h"
+#include "settings.h"
+#include "tires.h"
 
 static const char *TAG = "tpms";
 static esp_timer_handle_t s_led_timer;
@@ -42,6 +47,8 @@ void app_on_packet(const tpms_ford_t *p, int rssi_dbm, uint32_t ms)
     ESP_LOG_LEVEL_LOCAL(lvl, TAG, "%s id=%08x pressure=%.2f PSI temp=%s mode=%s code=%06x flags=%02x rssi=%d dBm",
                         new_burst ? "packet" : "repeat", (unsigned)p->id, p->psi_x4 / 4.0, temp,
                         tpms_ford_mode_str(p->mode), (unsigned)p->code, p->flags, rssi_dbm);
+    sensor_entry_t e;
+    if (new_burst && sensors_get(p->id, &e)) ha_mqtt_publish(&e);
 }
 
 int app_battery_mv(void)
@@ -49,9 +56,33 @@ int app_battery_mv(void)
     return battery_read_mv();
 }
 
+esp_err_t app_set_radio(const radio_config_t *cfg)
+{
+    esp_err_t err = radio_set_config(cfg);
+    if (err != ESP_OK) return err;
+    radio_config_t actual;
+    radio_get_config(&actual);  /* bandwidth snapped to what the chip supports */
+    return settings_save("radio", &actual, sizeof(actual));
+}
+
+void app_set_display(const display_settings_t *set)
+{
+    display_set_settings(set);
+    settings_save("display", set, sizeof(*set));
+}
+
+void app_assign_tire(tire_pos_t pos, uint32_t id)
+{
+    uint32_t old_id;
+    int old_pos;
+    tires_set(pos, id, &old_id, &old_pos);
+    ESP_LOGI(TAG, "tire %s: %08x -> %08x", tires_short_name(pos), (unsigned)old_id, (unsigned)id);
+    ha_mqtt_tires_changed();
+}
+
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Ford TPMS receiver starting (Wi-Fi off)");
+    ESP_LOGI(TAG, "Ford TPMS receiver starting");
 
     /* CPU frequency scaling: 160 MHz when busy, 80 MHz when idle. 80 MHz keeps
      * APB at full speed for the UART/SPI/I2C peripherals. No light sleep. */
@@ -64,12 +95,22 @@ void app_main(void)
     esp_timer_create_args_t ta = {.callback = led_off, .name = "led"};
     esp_timer_create(&ta, &s_led_timer);
 
+    settings_init();
+    tires_init();
     sensors_init();
     battery_init();
     /* Radio first: the display task reads radio stats from its first frame. */
+    radio_config_t rc;
     if (radio_init(app_on_packet) != ESP_OK) {
         ESP_LOGE(TAG, "radio init failed; CLI still available");
+    } else if (settings_load("radio", &rc, sizeof(rc)) && radio_set_config(&rc) != ESP_OK) {
+        ESP_LOGW(TAG, "saved radio settings rejected, using defaults");
+        radio_default_config(&rc);
+        radio_set_config(&rc);
     }
+    display_settings_t ds;
+    if (settings_load("display", &ds, sizeof(ds))) display_set_settings(&ds);
     display_init();
+    if (net_init() != ESP_OK) ESP_LOGE(TAG, "Wi-Fi init failed");
     ESP_ERROR_CHECK(cli_start());
 }

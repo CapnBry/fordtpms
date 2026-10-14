@@ -30,4 +30,8 @@ bool sensors_add(const tpms_ford_t *pkt, int rssi_dbm, uint32_t ms);
 int sensors_snapshot(sensor_entry_t *out, int max);
 /* Increments for every new burst; lets the UI notice fresh data cheaply. */
 uint32_t sensors_generation(void);
+/* Copies the entry for `id`. Returns false if it isn't in the table. */
+bool sensors_get(uint32_t id, sensor_entry_t *out);
+/* Number of IDs in the table. */
+int sensors_count(void);
 void sensors_clear(void);

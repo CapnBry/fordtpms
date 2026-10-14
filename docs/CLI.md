@@ -24,7 +24,9 @@ console prints *"Your terminal application does not support escape
 sequences"*. Commands still work, but arrow-key history and line editing are off.
 
 Commands that fail print `Command returned non-zero error code: 0x1 (ERROR)`.
-Settings changed from the CLI live in RAM and go back to the defaults on reboot.
+`radio`, `display` and `tires` settings are saved in flash (NVS) and survive
+reboots and firmware updates. The web UI changes the same settings. Other
+CLI changes (`raw`, `loglevel`) last until reboot.
 
 ## Command summary
 
@@ -33,12 +35,15 @@ Settings changed from the CLI live in RAM and go back to the defaults on reboot.
 | [`help`](#help) | List commands |
 | [`metrics`](#metrics--stats) / `stats` | Receiver, radio and display metrics |
 | [`sensors`](#sensors) | Table of the last 20 unique sensor IDs |
-| [`radio`](#radio) | Show or change radio settings |
+| [`tires`](#tires) | Assign sensor IDs to wheels (only assigned IDs go to MQTT) |
+| [`wifi`](#wifi) | Wi-Fi, web UI, clock and MQTT status |
+| [`radio`](#radio) | Show or change radio settings (saved) |
 | [`raw`](#raw) | Log every received payload |
+| [`rflog`](#rflog) | RF energy events and strong raw payloads |
 | [`regs`](#regs) | Dump SX1278 registers |
 | [`probe`](#probe) | Find the SX1278 DIO/RESET wiring |
 | [`inject`](#inject) | Feed a test packet through the pipeline |
-| [`display`](#display) | Show or change display brightness, dimming and shift |
+| [`display`](#display) | Show or change display brightness, dimming and shift (saved) |
 | [`screen`](#screen) | Print the current OLED frame as text |
 | [`loglevel`](#loglevel) | Change log verbosity |
 | [`tasks`](#tasks) | Task stack headroom |
@@ -69,7 +74,7 @@ tpms> metrics
 firmware      fordtpms 1 (IDF 6.1.0)
 uptime        0d 00:00:11
 heap free     273816 (min 270044)
-wifi          off (not initialised)
+wifi          192.168.2.136, -44 dBm, http://192.168.2.136/ (fordtpms.local)
 battery       4012 mV
 --- radio (SX1278 v0x12) ---
 frequency     315.000 MHz
@@ -93,7 +98,7 @@ frames        117 (26713 us/frame), i2c errors 0
 | Field | Meaning |
 |---|---|
 | `heap free` | Current free heap, and the lowest it has been since boot |
-| `wifi` | Always off; Wi-Fi is never initialised |
+| `wifi` | IP address, AP signal and web UI URL; `connecting` or `off (no SSID in wifi_config.h)` otherwise. Details: [`wifi`](#wifi) |
 | `battery` | Battery voltage after the 2:1 divider. About 4.0–4.2 V on USB power |
 | `SX1278 v0x12` | Radio version register; 0x12 means an SX1278 was found |
 | `chip rate` / `rx bw` / `lna` / `sync` | Current [`radio`](#radio) settings |
@@ -112,6 +117,62 @@ frames        117 (26713 us/frame), i2c errors 0
 | `present` | Whether the SSD1306 answered at boot |
 | `screen` | Current screen (`idle`, `detail`, `overview`), brightness state, and burn-in shift offset |
 | `frames` | Frames drawn, time to render and send one frame, and I2C error count |
+
+## tires
+
+```
+tires [fl|fr|rl|rr <id|clear>]
+```
+
+Shows or sets which sensor ID is on which wheel. Packets carry no position,
+so the receiver only knows this from you. Only assigned IDs are published over
+MQTT. Assignments are saved in flash. An ID can be assigned before it has been
+heard, and assigning an ID that is on another wheel moves it. The web UI does
+the same from the Tire Positions panel.
+
+```
+tpms> tires rl 364343a4
+I (21233) tpms: tire RL: 00000000 -> 364343a4
+FL Front Left  (none)
+FR Front Right (none)
+RL Rear Left   364343a4   38.00 PSI  0:02 ago
+RR Rear Right  (none)
+assigned IDs are published over MQTT; saved in flash
+```
+
+`not heard since boot` means the ID is assigned but no packet has arrived yet.
+`tires rl clear` stops publishing that sensor. Its Home Assistant device is
+not deleted.
+
+## wifi
+
+```
+wifi
+```
+
+Network status. Settings come from `firmware/src/wifi_config.h` at build time
+(see the [firmware README](../firmware/README.md#wi-fi-web-ui-and-mqtt)).
+
+```
+tpms> wifi
+ssid          myssid
+state         connected
+hostname      fordtpms (mDNS fordtpms.local)
+ip            192.168.2.136
+ap rssi       -44 dBm
+web ui        http://192.168.2.136/  (1 live clients)
+reconnects    0
+time          2026-10-14 21:37:29
+mqtt          mqtt://mqtt.lan:1883 connected, 2 published, 1 connects
+```
+
+| Field | Meaning |
+|---|---|
+| `state` | `connecting` until associated with an IP address. Retries back off from 1 s to 30 s |
+| `web ui` | URL and number of open WebSocket connections (browser tabs) |
+| `reconnects` | Wi-Fi drops since boot |
+| `time` | Local time from NTP (`TIME_ZONE`), or `not synced` |
+| `mqtt` | Broker, state, readings published, and connections since boot |
 
 ## sensors
 
@@ -151,11 +212,14 @@ tpms> sensors
 
 ```
 radio [freq <MHz>] [bw <kHz>] [lna <1-6>] [sync 5556|aaa9|5555] [bitrate <chips/s>]
+radio defaults
 ```
 
 Without arguments, shows the current settings. With `key value` pairs, changes
-them and reprograms the SX1278 immediately, including image calibration for
-the new frequency.
+them, reprograms the SX1278 immediately (including image calibration for the
+new frequency) and saves them. `radio defaults` goes back to 315.000 MHz,
+83.3 kHz, LNA 1, sync 5556, 19231 chip/s. The web UI's **Radio** dialog does
+the same.
 
 ```
 tpms> radio
@@ -198,6 +262,42 @@ I (98824) radio: raw d0d45431c0826a2445a855f13391f6ef rssi=-84 -> manchester
 
 The 16 bytes are the 128 raw chips after the sync word, before Manchester
 decoding.
+
+## rflog
+
+```
+rflog [clear]
+```
+
+Reception diagnostics collected in RAM since boot (or `rflog clear`). The
+same data is served as JSON at `http://<ip>/api/rflog`, so an unattended
+run can be checked without opening the serial port (opening it can reset
+the board).
+
+```
+tpms> rflog            (illustrative output)
+RF events (peak >= noise + 12 dB), 2 since boot, last 2:
+start                dur ms  peak noise syncs  pays   dec
+2026-10-15 03:12:41     757   -61   -85     4     4     4
+2026-10-15 04:02:10     505   -70   -85     0     0     0
+
+Strongest 2 events since boot:
+...
+
+Strong payloads (sync RSSI >= noise + 6 dB), 4 since boot, last 4:
+2026-10-15 03:12:41  -62 dBm (noise -85) ok         <raw payload hex>
+(also at http://<ip>/api/rflog)
+```
+
+| List | Contents |
+|---|---|
+| RF events | Last 48 runs of 250 ms windows whose peak RSSI was at least 12 dB above the noise floor: start (local time, or uptime before NTP), duration, peak, noise floor, and syncs/payloads/decodes during the run |
+| Strongest events | The 16 loudest events since boot, so a real burst isn't pushed out by later weak ones |
+| Strong payloads | Last 24 raw payloads whose sync RSSI was at least 6 dB above the noise floor, decoded or not, with the decode result |
+
+A strong event with no syncs means the sync word never matched (polarity or
+frequency). Syncs without decodes mean the data was wrong (bit rate,
+deviation or bandwidth).
 
 ## regs
 
@@ -272,9 +372,12 @@ temperature"); `FF` = 0x04 at rest, 0x44 moving, 0x08 learn, with 0x20 as the
 ```
 display [bright <0-255>] [dim <0-255>] [dim_after <s>] [shift <s>]
 display wake
+display defaults
 ```
 
-Without arguments, shows the settings. Changes apply immediately.
+Without arguments, shows the settings. Changes apply immediately and are saved.
+`display defaults` restores the defaults below. The web UI's **Display**
+dialog does the same.
 
 ```
 tpms> display
@@ -328,15 +431,19 @@ Shows free stack space (in bytes) for the firmware's main tasks.
 
 ```
 tpms> tasks
-radio    stack free 3324
-display  stack free 2900
-IDLE0    stack free 976
-IDLE1    stack free 1100
+radio      stack free 3316
+display    stack free 2852
+web        stack free 4364
+httpd      stack free 4068
+mqtt_task  stack free 4772
+IDLE0      stack free 920
+IDLE1      stack free 980
 ```
 
 ## reboot
 
-Restarts the ESP32. All settings changed from the CLI and the sensor table are lost.
+Restarts the ESP32. The sensor table and `raw`/`loglevel` changes are lost;
+radio, display and tire settings are kept.
 
 ---
 

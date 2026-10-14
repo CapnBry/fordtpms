@@ -24,6 +24,7 @@ typedef struct {
 esp_err_t display_init(void);
 void display_get_settings(display_settings_t *out);
 void display_set_settings(const display_settings_t *in);
+void display_default_settings(display_settings_t *out);
 
 typedef struct {
     bool present;

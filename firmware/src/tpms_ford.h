@@ -6,6 +6,11 @@
  *
  *     55 55 55 56 | 128 Manchester chips ('10' = 1, '01' = 0)
  *
+ * The 0x55 run is the preamble (Manchester zeros; 28 to 61+ chips in the
+ * rtl_433 captures). The final "0110" is a Manchester '1' start bit: its "11"
+ * chip pair breaks the alternation, so 0x5556 marks the frame start exactly,
+ * whereas 0x5555 would match anywhere in the preamble.
+ *
  * which yields 8 bytes: II II II II PP TT FF CC
  *   I = sensor ID, P = pressure (PSI * 4, 9th bit in F & 0x20),
  *   T = temperature (C + 56, invalid when 0x80 set), F = flags,
@@ -63,8 +68,8 @@ tpms_ford_status_t tpms_ford_decode_chips(const uint8_t *chips, size_t nbits, si
                                           bool invert, tpms_ford_t *out);
 
 /*
- * Search a raw chip stream of either polarity for the 16 chip preamble tail
- * (0x5556 / 0xAAA9) and decode the first valid packet after it. Returns the
+ * Search a raw chip stream of either polarity for the 16 chip frame start
+ * (0x5556 / 0xAAA9: preamble tail + start delimiter) and decode the first valid packet after it. Returns the
  * "best" error seen if nothing decoded.
  */
 tpms_ford_status_t tpms_ford_search(const uint8_t *chips, size_t nbits, tpms_ford_t *out);

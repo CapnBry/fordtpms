@@ -33,3 +33,6 @@ __pycache__/
 *.swp
 *~
 .DS_Store
+
+# Local Wi-Fi / MQTT credentials (template: firmware/src/wifi_config.example.h)
+firmware/src/wifi_config.h
