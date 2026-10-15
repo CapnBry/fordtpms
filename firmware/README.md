@@ -22,9 +22,14 @@ TTGO/LilyGO LoRa32 v2.1 (T3 v1.6), ESP32-PICO-D4, 4 MB flash.
 | SX1278 DIO1 | 33 | wired, unused (DCLK in continuous mode, verified) |
 | SX1278 DIO2 | 32 | SyncAddress interrupt, used to latch RSSI (verified) |
 
-The SX1278 covers 137–525 MHz, so 315 MHz works, but this board's antenna and
-matching network are tuned for 433 MHz. A 315 MHz antenna (~23.8 cm quarter
-wave) will improve range.
+**The SX1278 cannot receive 315 MHz.** It is sold as "137–525 MHz", but the
+datasheet only specifies 137–175 and 410–525 MHz. On this board the synthesizer
+locks from 137 to ~190 MHz and from ~360 MHz up, and **not** from ~200 to ~355 MHz
+(measured with the PllLock flag). At 315 MHz the receiver is not tuned at all
+and hears nothing. US Ford sensors (315 MHz) need a different radio, e.g. a
+CC1101. The firmware checks the PLL after every retune and reports an unlocked
+PLL in the log, in `metrics`, in `/api/state` (`"pll": false`) and as a banner
+in the web UI.
 
 ## Build / flash / monitor
 
@@ -267,7 +272,11 @@ The MQTT and mDNS clients come from the ESP-IDF component registry
   matched but the data was wrong (bit rate, deviation, bandwidth). Paste the
   hex for offline analysis.
 
-* `metrics`: `sync matches` should slowly climb even with no sensor around
+* `pll` in `metrics` / `"pll"` in `/api/state` and `/api/rflog` must be locked/`true`.
+  If it isn't, the radio can't tune that frequency (see [Hardware](#hardware))
+  and nothing else in this list matters. Sync matches still climb from noise
+  when the PLL is unlocked, so they don't prove the radio is receiving.
+* `metrics`: with the PLL locked, `sync matches` should slowly climb even with no sensor around
   (noise matches the sync word about once every 5–10 s). If it stays at 0 the
   radio isn't receiving.
 * Sync polarity: the default (`5556`) assumes the higher FSK tone is '1', which

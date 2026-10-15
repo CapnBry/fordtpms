@@ -21,9 +21,12 @@ static const char *TAG = "radio";
 #define REG_OPMODE        0x01
 #define REG_BITRATE_MSB   0x02
 #define REG_BITRATE_LSB   0x03
+#define REG_FDEV_MSB      0x04
+#define REG_FDEV_LSB      0x05
 #define REG_FRF_MSB       0x06
 #define REG_FRF_MID       0x07
 #define REG_FRF_LSB       0x08
+#define REG_PACONFIG      0x09
 #define REG_LNA           0x0C
 #define REG_RXCONFIG      0x0D
 #define REG_RSSICONFIG    0x0E
@@ -33,6 +36,8 @@ static const char *TAG = "radio";
 #define REG_AFCBW         0x13
 #define REG_OOKPEAK       0x14
 #define REG_PREAMBLEDETECT 0x1F
+#define REG_PREAMBLE_MSB  0x25
+#define REG_PREAMBLE_LSB  0x26
 #define REG_OSC           0x24
 #define REG_SYNCCONFIG    0x27
 #define REG_SYNCVALUE1    0x28
@@ -51,12 +56,15 @@ static const char *TAG = "radio";
 #define OPMODE_LF         0x08  /* FSK, low frequency (137-525 MHz) registers */
 #define MODE_SLEEP        0x00
 #define MODE_STDBY        0x01
+#define MODE_TX           0x03
 #define MODE_RX           0x05
 
 #define IRQ1_MODEREADY    0x80
+#define IRQ1_PLLLOCK      0x10
 #define IRQ1_SYNCMATCH    0x01
 #define IRQ2_FIFOOVERRUN  0x10
 #define IRQ2_PAYLOADREADY 0x04
+#define IRQ2_PACKETSENT   0x08
 
 #define RXCONFIG_RESTART  0x40  /* RestartRxWithoutPllLock */
 
@@ -231,7 +239,31 @@ static esp_err_t apply_config(void)
     }
 
     set_mode(MODE_RX);
-    return ESP_OK;
+
+    /* The SX1278 is only specified for 137-175 and 410-525 MHz. In between,
+     * the synthesizer may not lock (e.g. 315 MHz: no lock from ~200 to
+     * ~355 MHz on the test board) and the receiver then hears nothing at all,
+     * silently. Lock takes well under 1 ms when it is possible. */
+    bool locked = false;
+    for (int i = 0; i < 20 && !(locked = rd(REG_IRQFLAGS1) & IRQ1_PLLLOCK); i++) {
+        esp_rom_delay_us(250);
+    }
+    s_stats.pll_locked = locked;
+    if (!locked) {
+        ESP_LOGE(TAG, "PLL NOT LOCKED at %.3f MHz: the SX1278 cannot tune here (specified 137-175 and 410-525 MHz)",
+                 s_cfg.freq_hz / 1e6);
+    }
+    return locked ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+static void wr_burst(uint8_t reg, const uint8_t *buf, size_t n)
+{
+    spi_transaction_t t = {
+        .addr = reg | 0x80,
+        .length = n * 8,
+        .tx_buffer = buf,
+    };
+    ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, &t));
 }
 
 static void restart_rx(void)
@@ -351,6 +383,14 @@ static void radio_task(void *arg)
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
         uint8_t f1 = rd(REG_IRQFLAGS1);
         uint8_t f2 = rd(REG_IRQFLAGS2);
+
+        bool locked = f1 & IRQ1_PLLLOCK;
+        if (locked != s_stats.pll_locked) {
+            if (locked) ESP_LOGW(TAG, "PLL locked again at %.3f MHz", s_cfg.freq_hz / 1e6);
+            else ESP_LOGE(TAG, "PLL lost lock at %.3f MHz", s_cfg.freq_hz / 1e6);
+            s_stats.pll_locked = locked;
+        }
+        if (!locked) s_stats.pll_unlocked_polls++;
 
         if ((f1 & IRQ1_SYNCMATCH) && !in_packet) {
             /* Latch RSSI while the packet is on the air. */
@@ -503,9 +543,11 @@ void radio_reset_stats(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     uint8_t v = s_stats.version;
     int16_t noise = s_stats.noise_dbm;
+    bool locked = s_stats.pll_locked;
     memset(&s_stats, 0, sizeof(s_stats));
     s_stats.version = v;
     s_stats.noise_dbm = noise;
+    s_stats.pll_locked = locked;
     xSemaphoreGive(s_lock);
 }
 
@@ -590,6 +632,49 @@ int radio_rssi_history(int8_t *out, int max)
     }
     xSemaphoreGive(s_lock);
     return n;
+}
+
+/* ------------------------------------------------------------- TX ------ */
+
+esp_err_t radio_tx_ford(const uint8_t payload[8], int count, int gap_ms, bool pa_boost, int power_dbm)
+{
+    /* PA_BOOST: Pout = 2..17 dBm. RFO with MaxPower 7 (Pmax 15 dBm): Pout = 0..15 dBm. */
+    if (pa_boost ? (power_dbm < 2 || power_dbm > 17) : (power_dbm < 0 || power_dbm > 15)) return ESP_ERR_INVALID_ARG;
+    if (count < 1 || count > 20 || gap_ms < 0 || gap_ms > 1000) return ESP_ERR_INVALID_ARG;
+    uint8_t frame[TPMS_FORD_FRAME_BYTES];
+    tpms_ford_encode(payload, frame);
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    set_mode(MODE_SLEEP);               /* clears the FIFO */
+    set_mode(MODE_STDBY);
+    uint16_t fdev = (uint16_t)((35000ULL << 19) / FXOSC);  /* +/-35 kHz like the sensors */
+    wr(REG_FDEV_MSB, fdev >> 8);
+    wr(REG_FDEV_LSB, fdev & 0xff);
+    wr(REG_PACONFIG, pa_boost ? (uint8_t)(0x80 | 0x70 | (power_dbm - 2)) : (uint8_t)(0x70 | power_dbm));
+    wr(REG_PREAMBLE_MSB, 0);
+    wr(REG_PREAMBLE_LSB, 2);            /* 2 x 0x55, then the frame's own 55 55 55 56 */
+    wr(REG_SYNCCONFIG, 0x20);           /* no sync word, preamble polarity 0x55 */
+    wr(REG_PAYLOADLENGTH, sizeof(frame));
+    wr(REG_FIFOTHRESH, 0x80 | 0x0f);    /* start TX as soon as the FIFO is not empty */
+
+    esp_err_t err = ESP_OK;
+    for (int i = 0; i < count && err == ESP_OK; i++) {
+        wr_burst(REG_FIFO, frame, sizeof(frame));
+        set_mode(MODE_TX);
+        int64_t t0 = esp_timer_get_time();
+        while (!(rd(REG_IRQFLAGS2) & IRQ2_PACKETSENT)) {
+            if (esp_timer_get_time() - t0 > 100000) { err = ESP_ERR_TIMEOUT; break; }
+            esp_rom_delay_us(200);
+        }
+        set_mode(MODE_STDBY);
+        if (i + 1 < count && gap_ms) vTaskDelay(pdMS_TO_TICKS(gap_ms));
+    }
+    /* Back to receive with the saved settings (PA off: RX mode doesn't use it). */
+    apply_config();
+    xSemaphoreGive(s_lock);
+    ESP_LOGI(TAG, "tx %d frame(s) %s %d dBm at %.3f MHz: %s", count, pa_boost ? "PA_BOOST" : "RFO", power_dbm,
+             s_cfg.freq_hz / 1e6, esp_err_to_name(err));
+    return err;
 }
 
 void radio_set_raw_log(bool on)

@@ -77,5 +77,13 @@ tpms_ford_status_t tpms_ford_search(const uint8_t *chips, size_t nbits, tpms_for
 /* Builds a valid 8 byte payload (fills in the checksum). */
 void tpms_ford_fix_checksum(uint8_t bytes[8]);
 
+/*
+ * Encodes 8 payload bytes as a complete air frame of chips, MSB first:
+ * 55 55 55 56 (preamble + start delimiter) then 128 Manchester chips.
+ * For transmit tests.
+ */
+#define TPMS_FORD_FRAME_BYTES    (4 + TPMS_FORD_CHIP_BYTES)
+void tpms_ford_encode(const uint8_t bytes[8], uint8_t frame[TPMS_FORD_FRAME_BYTES]);
+
 const char *tpms_ford_status_str(tpms_ford_status_t st);
 const char *tpms_ford_mode_str(tpms_ford_mode_t m);

@@ -78,6 +78,7 @@ wifi          192.168.2.136, -44 dBm, http://192.168.2.136/ (fordtpms.local)
 battery       4012 mV
 --- radio (SX1278 v0x12) ---
 frequency     315.000 MHz
+pll           locked
 chip rate     19231 /s, rx bw 83333 Hz, lna G1, sync 5556
 noise floor   -83 dBm
 sync matches  2
@@ -101,9 +102,10 @@ frames        117 (26713 us/frame), i2c errors 0
 | `wifi` | IP address, AP signal and web UI URL; `connecting` or `off (no SSID in wifi_config.h)` otherwise. Details: [`wifi`](#wifi) |
 | `battery` | Battery voltage after the 2:1 divider. About 4.0–4.2 V on USB power |
 | `SX1278 v0x12` | Radio version register; 0x12 means an SX1278 was found |
+| `pll` | `locked`, or `NOT LOCKED` when the SX1278 can't tune the set frequency (it has no lock from ~200 to ~355 MHz, which includes 315 MHz). Unlocked means the receiver hears nothing |
 | `chip rate` / `rx bw` / `lna` / `sync` | Current [`radio`](#radio) settings |
 | `noise floor` | Smoothed RSSI between packets. About −83 dBm is normal at 315 MHz |
-| `sync matches` | Times the radio matched the sync word `0x55 0x56`. Noise produces one roughly every 5–10 s, so a slow climb shows the radio is receiving |
+| `sync matches` | Times the radio matched the sync word `0x55 0x56`. Noise produces one roughly every 5–10 s. It climbs even with the PLL unlocked, so check `pll` too |
 | `payloads` | Payloads read from the FIFO after a sync match |
 | `decoded ok` | Valid Ford packets received **over the air**. `inject` doesn't count here |
 | `err manchest.` | Payload contained an invalid Manchester chip pair: almost always noise |

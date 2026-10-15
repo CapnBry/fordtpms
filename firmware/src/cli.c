@@ -66,6 +66,9 @@ static int cmd_metrics(int argc, char **argv)
     printf("battery       %d mV\n", app_battery_mv());
     printf("--- radio (SX1278 v0x%02x) ---\n", rs.version);
     printf("frequency     %.3f MHz\n", rc.freq_hz / 1e6);
+    if (rs.pll_locked) printf("pll           locked\n");
+    else printf("pll           NOT LOCKED: receiver is not tuned and hears nothing (%u polls unlocked)\n",
+                (unsigned)rs.pll_unlocked_polls);
     printf("chip rate     %u /s, rx bw %u Hz, lna G%u, sync %s\n", (unsigned)rc.bitrate,
            (unsigned)rc.rxbw_hz, rc.lna_gain, sync_name(rc.sync));
     printf("noise floor   %d dBm\n", rs.noise_dbm);
@@ -212,15 +215,19 @@ static int cmd_tires(int argc, char **argv)
 
 /* -------------------------------------------------------------- radio -- */
 
+#define PLL_WARNING "WARNING: PLL NOT LOCKED at %.3f MHz. The SX1278 cannot tune here (specified 137-175 " \
+                    "and 410-525 MHz); the receiver hears nothing. Settings were applied and saved anyway.\n"
+
 static int cmd_radio(int argc, char **argv)
 {
     radio_config_t c;
     radio_get_config(&c);
     if (argc == 2 && !strcmp(argv[1], "defaults")) {
         radio_default_config(&c);
-        app_set_radio(&c);
+        esp_err_t err = app_set_radio(&c);
         printf("radio settings reset to defaults\n");
-        return 0;
+        if (err == ESP_ERR_INVALID_STATE) printf(PLL_WARNING, c.freq_hz / 1e6);
+        return err == ESP_OK ? 0 : 1;
     }
     if (argc == 1) {
         printf("freq %.3f MHz, bitrate %u, bw %u Hz, lna %u, sync %s\n", c.freq_hz / 1e6, (unsigned)c.bitrate,
@@ -248,6 +255,10 @@ static int cmd_radio(int argc, char **argv)
         return 1;
     }
     esp_err_t err = app_set_radio(&c);
+    if (err == ESP_ERR_INVALID_STATE) {
+        printf(PLL_WARNING, c.freq_hz / 1e6);
+        return 1;
+    }
     if (err != ESP_OK) {
         printf("invalid: %s\n", esp_err_to_name(err));
         return 1;
@@ -366,6 +377,52 @@ static int cmd_inject(int argc, char **argv)
     return 0;
 }
 
+/* ----------------------------------------------------------------- tx -- */
+
+static bool parse_hex(const char *h, uint8_t *b, size_t *n)
+{
+    size_t len = strlen(h);
+    if (len != 14 && len != 16) return false;
+    for (size_t i = 0; i < len / 2; i++) {
+        char t[3] = {h[2 * i], h[2 * i + 1], 0};
+        if (!isxdigit((unsigned char)t[0]) || !isxdigit((unsigned char)t[1])) return false;
+        b[i] = (uint8_t)strtoul(t, NULL, 16);
+    }
+    *n = len / 2;
+    return true;
+}
+
+static int cmd_tx(int argc, char **argv)
+{
+    /* Default: fake ID feedf00d, 38 PSI, 29 C, rest (same code as a real sensor here). */
+    uint8_t b[8] = {0xfe, 0xed, 0xf0, 0x0d, 0x98, 0x55, 0x06, 0};
+    int count = 4, gap_ms = 50, dbm = 2;
+    bool pa_boost = true, fix = true;
+    for (int i = 1; i < argc; i++) {
+        size_t n;
+        if (i + 1 < argc && !strcmp(argv[i], "count")) count = atoi(argv[++i]);
+        else if (i + 1 < argc && !strcmp(argv[i], "gap")) gap_ms = atoi(argv[++i]);
+        else if (i + 1 < argc && !strcmp(argv[i], "pa")) pa_boost = true, dbm = atoi(argv[++i]);
+        else if (i + 1 < argc && !strcmp(argv[i], "rfo")) pa_boost = false, dbm = atoi(argv[++i]);
+        else if (parse_hex(argv[i], b, &n)) fix = n == 7;
+        else {
+            printf("usage: tx [7 or 8 hex bytes] [count n] [gap ms] [pa 2-17 | rfo 0-15]\n");
+            return 1;
+        }
+    }
+    if (fix) tpms_ford_fix_checksum(b);
+    tpms_ford_t pkt;
+    tpms_ford_status_t st = tpms_ford_decode_bytes(b, &pkt);
+    if (st != TPMS_FORD_OK) printf("warning: payload does not decode (%s), sending anyway\n", tpms_ford_status_str(st));
+    radio_stats_t rs;
+    radio_get_stats(&rs);
+    if (!rs.pll_locked) printf("warning: PLL not locked at this frequency, nothing will be transmitted on it\n");
+    esp_err_t err = radio_tx_ford(b, count, gap_ms, pa_boost, dbm);
+    printf("tx %02x%02x%02x%02x%02x%02x%02x%02x x%d %s %d dBm: %s\n", b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+           count, pa_boost ? "PA_BOOST" : "RFO", dbm, esp_err_to_name(err));
+    return err == ESP_OK ? 0 : 1;
+}
+
 /* ------------------------------------------------------------ display -- */
 
 static int cmd_display(int argc, char **argv)
@@ -464,6 +521,8 @@ esp_err_t cli_start(void)
         {.command = "raw", .help = "Log every raw payload (hex) at INFO", .hint = "on|off", .func = cmd_raw},
         {.command = "inject", .help = "Feed a packet through the pipeline (default: rtl_433 sample)",
          .hint = "[hex bytes] [rssi]", .func = cmd_inject},
+        {.command = "tx", .help = "Transmit test Ford frames at the RX frequency (default fake ID feedf00d)",
+         .hint = "[hex bytes] [count n] [gap ms] [pa 2-17 | rfo 0-15]", .func = cmd_tx},
         {.command = "display",
          .help = "Show or set display (saved): display bright 143 dim 1 dim_after 120 shift 30 | wake | defaults",
          .hint = "[bright n] [dim n] [dim_after s] [shift s] | wake | defaults", .func = cmd_display},

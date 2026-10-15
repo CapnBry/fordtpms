@@ -114,6 +114,18 @@ int main(void)
     tpms_ford_fix_checksum(b);
     CHECK(tpms_ford_decode_bytes(b, &t) == TPMS_FORD_OK && !t.temp_valid && t.mode == TPMS_MODE_LEARN, "learn/no temp");
 
+    /* Encoder round trip, through the same path as the radio (sync 0x5556 + 16 bytes). */
+    {
+        uint8_t p[8] = {0xfe, 0xed, 0xf0, 0x0d, 0x98, 0x55, 0x06, 0};
+        tpms_ford_fix_checksum(p);
+        uint8_t frame[TPMS_FORD_FRAME_BYTES];
+        tpms_ford_encode(p, frame);
+        tpms_ford_t out[4];
+        CHECK(decode_like_radio(frame, sizeof(frame) * 8 + 1, out) == 1 && out[0].id == 0xfeedf00d &&
+              out[0].psi_x4 == 0x98, "encode -> radio decode");
+        CHECK(tpms_ford_search(frame, sizeof(frame) * 8, &t) == TPMS_FORD_OK && t.id == 0xfeedf00d, "encode -> search");
+    }
+
     memset(b, 0, sizeof(b));
     CHECK(tpms_ford_decode_bytes(b, &t) == TPMS_FORD_ERR_ZERO, "zero payload reject");
 

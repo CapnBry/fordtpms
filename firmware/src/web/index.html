@@ -224,6 +224,15 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
   font-weight: 700; letter-spacing: .4em; box-shadow: 0 0 30px #ff241488; animation: blink 1s steps(2) infinite;
 }
 .lost.show { display: block; }
+.pll-alarm {
+  display: none; margin: 0 0 12px; padding: 10px 14px; border: 2px solid var(--red); border-radius: 4px;
+  background: #1a0302; color: var(--red); font-weight: 700; letter-spacing: .15em; line-height: 1.5;
+  box-shadow: 0 0 24px #ff241455;
+}
+.pll-alarm.show { display: block; }
+.pll-alarm b { letter-spacing: .3em; animation: blink 1s steps(2) infinite; }
+.pll-alarm small { display: block; color: var(--dim); font-weight: 400; letter-spacing: .05em; }
+#freq.unlocked { color: var(--red); text-decoration: line-through; }
 .hb { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #300; margin-left: 6px; vertical-align: middle; transition: background .3s; }
 .hb.on { background: var(--green); box-shadow: 0 0 8px var(--green); transition: none; }
 .stale { opacity: .45; filter: grayscale(.6); transition: opacity .5s; }
@@ -258,6 +267,9 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
     </div>
     <div class="clock"><span>LINK</span><i class="hb" id="hb"></i> &nbsp; <span id="host">----</span><br><span id="clock">--</span></div>
   </header>
+  <div class="pll-alarm" id="pll-alarm"><b>RADIO NOT TUNED</b> &middot; PLL NOT LOCKED AT <span id="pll-freq">---</span>
+    <small>The SX1278 synthesizer cannot reach this frequency (specified 137&ndash;175 and 410&ndash;525 MHz), so the
+    receiver hears nothing. No packets can be received until the frequency is changed or the radio is replaced.</small></div>
   <div class="scanner" id="scanner"></div>
 
   <div class="grid">
@@ -707,6 +719,9 @@ function onStatus(m) {
   devNow = m.now; devNowAt = performance.now();
   if (m.rssi > peak.v || performance.now() - peak.t > 1500) { peak.v = m.rssi; peak.t = performance.now(); }
   $("freq").textContent = (m.freq / 1e6).toFixed(3) + " MHz";
+  $("freq").classList.toggle("unlocked", m.pll === false);
+  $("pll-alarm").classList.toggle("show", m.pll === false);
+  $("pll-freq").textContent = (m.freq / 1e6).toFixed(3) + " MHz";
   $("rfcfg").textContent = `BW ${(m.bw / 1000).toFixed(1)} kHz · LNA G${m.lna}`;
   $("host").textContent = `${m.host.toUpperCase()} · ${m.ip}`;
   $("clock").textContent = m.time || ("UPTIME " + fmtUp(m.now));

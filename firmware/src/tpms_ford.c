@@ -12,6 +12,20 @@ void tpms_ford_fix_checksum(uint8_t b[8])
     b[7] = (uint8_t)(b[0] + b[1] + b[2] + b[3] + b[4] + b[5] + b[6]);
 }
 
+void tpms_ford_encode(const uint8_t b[8], uint8_t frame[TPMS_FORD_FRAME_BYTES])
+{
+    static const uint8_t hdr[4] = {0x55, 0x55, 0x55, 0x56};
+    memcpy(frame, hdr, sizeof(hdr));
+    for (int i = 0; i < TPMS_FORD_PAYLOAD_BYTES; i++) {
+        uint16_t chips = 0;
+        for (int k = 7; k >= 0; k--) {
+            chips = (uint16_t)(chips << 2 | (((b[i] >> k) & 1) ? 0x2 : 0x1));  /* '10' = 1, '01' = 0 */
+        }
+        frame[4 + 2 * i] = (uint8_t)(chips >> 8);
+        frame[5 + 2 * i] = (uint8_t)chips;
+    }
+}
+
 tpms_ford_status_t tpms_ford_decode_bytes(const uint8_t b[8], tpms_ford_t *out)
 {
     if ((uint8_t)(b[0] + b[1] + b[2] + b[3] + b[4] + b[5] + b[6]) != b[7]) {

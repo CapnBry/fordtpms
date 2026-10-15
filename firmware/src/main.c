@@ -59,10 +59,13 @@ int app_battery_mv(void)
 esp_err_t app_set_radio(const radio_config_t *cfg)
 {
     esp_err_t err = radio_set_config(cfg);
-    if (err != ESP_OK) return err;
+    /* An unlockable frequency is still applied and saved (so the UI shows what
+     * was asked for); the caller reports ESP_ERR_INVALID_STATE as a warning. */
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
     radio_config_t actual;
     radio_get_config(&actual);  /* bandwidth snapped to what the chip supports */
-    return settings_save("radio", &actual, sizeof(actual));
+    esp_err_t serr = settings_save("radio", &actual, sizeof(actual));
+    return serr != ESP_OK ? serr : err;
 }
 
 void app_set_display(const display_settings_t *set)

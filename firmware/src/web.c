@@ -88,6 +88,7 @@ static void json_status(jbuf_t *j, bool with_sensors)
         if (hist[i] > peak) peak = hist[i];
     jp(j, "{\"t\":\"status\",\"now\":%u,\"time\":\"%s\",\"freq\":%u,\"bw\":%u,\"lna\":%u,\"noise\":%d,\"rssi\":%d,",
        (unsigned)now_ms(), tbuf, (unsigned)rc.freq_hz, (unsigned)rc.rxbw_hz, rc.lna_gain, rs.noise_dbm, peak);
+    jp(j, "\"pll\":%s,\"pll_unlocked\":%u,", rs.pll_locked ? "true" : "false", (unsigned)rs.pll_unlocked_polls);
     jp(j, "\"hist\":[");
     for (int i = 0; i < nh; i++) jp(j, "%s%d", i ? "," : "", hist[i]);
     jp(j, "],\"syncs\":%u,\"payloads\":%u,\"decoded\":%u,\"err_manchester\":%u,\"err_checksum\":%u,"
@@ -200,10 +201,10 @@ static esp_err_t h_rflog(httpd_req_t *req)
     char wall[24];
     net_fmt_time(wall, sizeof(wall), net_wall_time(0));
     jp(&j, "{\"now\":%u,\"time\":\"%s\",\"noise\":%d,\"syncs\":%u,\"payloads\":%u,\"decoded\":%u,"
-           "\"freq\":%u,\"bw\":%u,\"lna\":%u,\"sync\":\"%s\",\"event_db\":%d,\"capture_db\":%d,"
+           "\"freq\":%u,\"pll\":%s,\"bw\":%u,\"lna\":%u,\"sync\":\"%s\",\"event_db\":%d,\"capture_db\":%d,"
            "\"events_total\":%u,\"events\":[",
        (unsigned)now_ms(), wall, rs.noise_dbm, (unsigned)rs.syncs, (unsigned)rs.payloads, (unsigned)rs.decoded,
-       (unsigned)rc.freq_hz, (unsigned)rc.rxbw_hz, rc.lna_gain,
+       (unsigned)rc.freq_hz, rs.pll_locked ? "true" : "false", (unsigned)rc.rxbw_hz, rc.lna_gain,
        rc.sync == RADIO_SYNC_AAA9 ? "aaa9" : rc.sync == RADIO_SYNC_5555 ? "5555" : "5556", RADIO_EVENT_DB,
        RADIO_CAPTURE_DB, (unsigned)ev_total);
     json_events(&j, ev, ne);
@@ -250,7 +251,7 @@ static bool form_get(const char *form, const char *key, char *val, size_t len)
 
 static esp_err_t reply(httpd_req_t *req, const char *err)
 {
-    char buf[160];
+    char buf[256];
     httpd_resp_set_type(req, "application/json");
     if (err) {
         httpd_resp_set_status(req, "400 Bad Request");
@@ -287,7 +288,11 @@ static esp_err_t h_radio(httpd_req_t *req)
             else return reply(req, "sync must be 5556, aaa9 or 5555");
         }
     }
-    if (app_set_radio(&c) != ESP_OK)
+    esp_err_t err = app_set_radio(&c);
+    if (err == ESP_ERR_INVALID_STATE)
+        return reply(req, "saved, but PLL NOT LOCKED: the SX1278 cannot tune this frequency "
+                          "(specified 137-175 and 410-525 MHz)");
+    if (err != ESP_OK)
         return reply(req, "rejected: frequency 137-525 MHz, LNA 1-6, bitrate 1200-300000");
     return reply(req, NULL);
 }

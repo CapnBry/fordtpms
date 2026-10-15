@@ -45,6 +45,8 @@ typedef struct {
     int16_t  best_rssi_dbm, worst_rssi_dbm;  /* over decoded packets */
     uint32_t last_decode_ms;
     uint8_t  version;         /* RegVersion, 0x12 for SX1278 */
+    bool     pll_locked;      /* synthesizer locked: false = receiver is not tuned, hears nothing */
+    uint32_t pll_unlocked_polls;  /* radio task polls (~5 ms each) that found the PLL unlocked */
 } radio_stats_t;
 
 /*
@@ -91,7 +93,9 @@ esp_err_t radio_init(radio_packet_cb_t cb);
 void radio_get_stats(radio_stats_t *out);
 void radio_reset_stats(void);
 void radio_get_config(radio_config_t *out);
-esp_err_t radio_set_config(const radio_config_t *cfg);   /* reprograms the chip */
+/* Reprograms the chip. The config is applied even if the PLL can't lock at
+ * the new frequency; that case returns ESP_ERR_INVALID_STATE. */
+esp_err_t radio_set_config(const radio_config_t *cfg);
 void radio_default_config(radio_config_t *out);
 
 /* Noise floor history for the idle screen, one sample per ~250 ms. */
@@ -102,6 +106,13 @@ void radio_probe(FILE *out);
 
 /* Dump all SX1278 registers. */
 void radio_dump_regs(FILE *out);
+
+/*
+ * Transmit test: send `count` Ford frames of the 8 byte payload (checksum
+ * included) at the current frequency, FSK +/-35 kHz, then return to RX.
+ * pa_boost: PA_BOOST pin (2..17 dBm) or RFO pin (0..15 dBm).
+ */
+esp_err_t radio_tx_ford(const uint8_t payload[8], int count, int gap_ms, bool pa_boost, int power_dbm);
 
 /* Enable logging of every raw payload (hex) at INFO level. */
 void radio_set_raw_log(bool on);
