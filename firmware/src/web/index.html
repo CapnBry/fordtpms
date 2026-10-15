@@ -25,9 +25,7 @@ body {
   font: 13px/1.3 "Eurostile", "Microgramma", "Bank Gothic", "Arial Narrow", Arial, sans-serif;
   letter-spacing: .08em;
   min-height: 100vh;
-  background:
-    repeating-linear-gradient(0deg, rgba(255,255,255,.012) 0 1px, transparent 1px 3px),
-    radial-gradient(ellipse at 50% -20%, #1c1214 0%, var(--bg) 60%);
+  background: #060606;
 }
 .dash { max-width: 1280px; margin: 0 auto; padding: 12px 16px 24px; }
 
@@ -41,7 +39,7 @@ header { display: flex; align-items: flex-end; justify-content: space-between; g
   height: 22px; margin: 10px 0 14px; padding: 4px; display: grid; grid-template-columns: repeat(16, 1fr); gap: 4px;
   background: #000; border: 2px solid var(--bezel); border-radius: 12px; box-shadow: inset 0 0 12px #000, 0 0 0 1px #000;
 }
-.scanner i { border-radius: 3px; background: var(--red); opacity: .06; }
+.scanner i { border-radius: 3px; background: var(--red); opacity: .06; box-shadow: 0 0 12px var(--red); will-change: opacity; }
 
 /* ---- panels ---- */
 .grid { display: grid; gap: 14px; grid-template-columns: 1fr 1.35fr; }
@@ -60,9 +58,9 @@ header { display: flex; align-items: flex-end; justify-content: space-between; g
 
 /* ---- 7 segment displays ---- */
 .seg { display: inline-block; vertical-align: middle; --on: var(--red); }
-.seg svg { display: block; height: 100%; width: auto; overflow: visible; }
-.seg polygon, .seg circle { fill: var(--on); opacity: .045; transition: opacity .08s; }
-.seg .on { opacity: 1; filter: drop-shadow(0 0 2px var(--on)); }
+.seg svg { display: block; height: 100%; width: auto; overflow: visible; filter: drop-shadow(0 0 2px var(--on)); }
+.seg polygon, .seg circle { fill: var(--on); opacity: .03; }
+.seg .on { opacity: 1; }
 .amber { --on: var(--amber); }
 .green { --on: var(--green); }
 .blue  { --on: var(--blue); }
@@ -147,7 +145,7 @@ dialog {
   background: linear-gradient(180deg, #141417, #0a0a0c); border: 2px solid var(--red); border-radius: 8px;
   box-shadow: 0 0 40px #ff241455, inset 0 0 0 1px #000;
 }
-dialog::backdrop { background: rgba(0, 0, 0, .78); backdrop-filter: blur(2px); }
+dialog::backdrop { background: rgba(0, 0, 0, .82); }
 dialog[open] { animation: modal-in .18s ease-out; }
 @keyframes modal-in { from { transform: scale(.96); opacity: 0; } }
 .m-head { padding: 12px 16px 10px; border-bottom: 1px solid #2a0a06; }
@@ -155,11 +153,11 @@ dialog[open] { animation: modal-in .18s ease-out; }
 .m-head small { display: block; font-size: 9px; letter-spacing: .35em; color: var(--red); margin-top: 3px; }
 .m-scan { height: 4px; margin-top: 10px; background: #1a0503; border-radius: 2px; position: relative; overflow: hidden; }
 .m-scan::after {
-  content: ""; position: absolute; top: 0; bottom: 0; width: 18%; border-radius: 2px;
+  content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 18%; border-radius: 2px;
   background: linear-gradient(90deg, transparent, var(--red), transparent); box-shadow: 0 0 10px var(--red);
   animation: m-sweep 1.6s ease-in-out infinite alternate;
 }
-@keyframes m-sweep { from { left: 0; } to { left: 82%; } }
+@keyframes m-sweep { to { transform: translateX(455%); } }   /* 82% of the track, in units of the 18% sweep */
 .m-body { padding: 14px 16px; display: grid; gap: 12px; }
 .m-foot { padding: 12px 16px 14px; display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; border-top: 1px solid #1c1c20; }
 .m-foot .spacer { flex: 1; }
@@ -318,8 +316,8 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
             <path d="M34 132 Q60 128 86 132 L87 150 Q60 147 33 150 Z" stroke-dasharray="3 3" stroke-width="1"/>
             <path d="M33 150 Q60 147 87 150 Q93 180 89 214 Q87 224 76 225 L44 225 Q33 224 31 214 Q27 180 33 150 Z"/>
             <path d="M17 232 Q60 226 103 232 L103 240 Q60 235 17 240 Z" stroke-width="1"/>
-            <path d="M40 22 L80 22" stroke-width="3" stroke="#ff2414" id="carscan"/>
           </g>
+          <path d="M40 22 L80 22" stroke-width="3" stroke="#ff2414" id="carscan"/>
           <g fill="#ff241422" stroke="#ff2414" stroke-width="1">
             <rect x="7" y="45" width="11" height="32" rx="3" id="w0"/>
             <rect x="102" y="45" width="11" height="32" rx="3" id="w1"/>
@@ -575,15 +573,20 @@ const T_MIN = -110, T_MAX = -30, T_BARS = 40;
 const tachBars = [];
 (function buildTach() {
   const svg = $("tach"), W = 600, H = 112, gap = 4, bw = (W - gap * (T_BARS - 1)) / T_BARS;
+  const bands = {};
+  for (const col of ["var(--green)", "var(--amber)", "var(--red)"]) {
+    const g = document.createElementNS(NS, "g");
+    g.style.fill = col; g.style.filter = `drop-shadow(0 0 3px ${col})`;
+    svg.appendChild(g); bands[col] = g;
+  }
   for (let i = 0; i < T_BARS; i++) {
     const h = 10 + (H - 10) * Math.pow(i / (T_BARS - 1), 1.25);
     const r = document.createElementNS(NS, "rect");
     const frac = i / (T_BARS - 1);
     const col = frac > 0.8 ? "var(--red)" : frac > 0.55 ? "var(--amber)" : "var(--green)";
     r.setAttribute("x", i * (bw + gap)); r.setAttribute("y", H - h); r.setAttribute("width", bw); r.setAttribute("height", h);
-    r.setAttribute("rx", 1); r.setAttribute("class", "bar"); r.style.fill = col;
-    r.style.filter = `drop-shadow(0 0 3px ${col})`;
-    svg.appendChild(r); tachBars.push(r);
+    r.setAttribute("rx", 1); r.setAttribute("class", "bar");
+    bands[col].appendChild(r); tachBars.push(r);
   }
   for (let db = T_MIN; db <= T_MAX; db += 10) {
     const x = (db - T_MIN) / (T_MAX - T_MIN) * (W - bw) + bw / 2;
@@ -641,6 +644,8 @@ function drawHist() {
 const POS = ["FL", "FR", "RL", "RR"];
 const POS_LONG = ["FRONT LEFT", "FRONT RIGHT", "REAR LEFT", "REAR RIGHT"];
 const tires = () => (status && status.tires) || ["", "", "", ""];
+function setHtml(el, html) { if (el._html !== html) el.innerHTML = el._html = html; }   /* innerHTML reads back re-serialized */
+function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
 const sensorById = id => (sensors && sensors.list.find(s => s.id === id)) || null;
 function renderTires() {
   const now = deviceNow(), assigned = tires();
@@ -651,32 +656,33 @@ function renderTires() {
       el.dataset.built = 1;
       el.addEventListener("click", () => openTire({ pos: i }));
     }
-    el.querySelector(".pos span").textContent = POS_LONG[i];
-    el.querySelector(".pos .mq").textContent = id && status && status.mqtt === 1 ? "MQTT" : "";
+    setText(el.querySelector(".pos span"), POS_LONG[i]);
+    setText(el.querySelector(".pos .mq"), id && status && status.mqtt === 1 ? "MQTT" : "");
     el.classList.toggle("empty", !id);
     el.classList.toggle("unheard", !!id && !s);
-    el.classList.remove("moving", "learn", "flash");
     if (!id) {
-      el.querySelector(".id").textContent = "UNASSIGNED";
+      el.classList.remove("moving", "learn", "flash");
+      setText(el.querySelector(".id"), "UNASSIGNED");
       seg(el.querySelector(".p"), "--.-", 4);
-      el.querySelector(".meta").innerHTML = "TAP TO ASSIGN";
+      setHtml(el.querySelector(".meta"), "TAP TO ASSIGN");
       wheel.style.fill = "#ff241411";
       continue;
     }
-    el.querySelector(".id").textContent = id.toUpperCase();
+    setText(el.querySelector(".id"), id.toUpperCase());
     if (!s) {
+      el.classList.remove("moving", "learn", "flash");
       seg(el.querySelector(".p"), "--.-", 4);
-      el.querySelector(".meta").innerHTML = "NOT HEARD";
+      setHtml(el.querySelector(".meta"), "NOT HEARD");
       wheel.style.fill = "#ff241433";
       continue;
     }
-    if (s.mode === "MOVING") el.classList.add("moving");
-    if (s.mode === "LEARN") el.classList.add("learn");
+    el.classList.toggle("moving", s.mode === "MOVING");
+    el.classList.toggle("learn", s.mode === "LEARN");
     seg(el.querySelector(".p"), psiStr(s.psi), 4);
     const age = now - s.last;
-    el.querySelector(".meta").innerHTML =
+    setHtml(el.querySelector(".meta"),
       `TEMP <b>${s.temp === null ? "--" : s.temp + "&deg;C"}</b> &middot; <b>${kpa(s.psi)}</b> kPa<br>` +
-      `AGO <b>${fmtAge(age)}</b> &middot; <b>${s.rssi}</b> dBm`;
+      `AGO <b>${fmtAge(age)}</b> &middot; <b>${s.rssi}</b> dBm`);
     const fresh = age < 4000;
     el.classList.toggle("flash", fresh && Math.floor(performance.now() / 250) % 2 === 0);
     wheel.style.fill = fresh ? "#ff2414" : "#ff241466";
@@ -944,7 +950,11 @@ $("d-wake").addEventListener("click", () => run("d-err", () => post("/api/displa
 
 /* ------------------------------------------------------- animation loop */
 let lastSecond = 0;
+const dialogs = [...document.querySelectorAll("dialog")];
 function frame(t) {
+  requestAnimationFrame(frame);
+  /* behind an open dialog's backdrop the dash is barely visible: animate at ~10 fps so the dialog stays responsive */
+  if (t - scanLast < 100 && dialogs.some(d => d.open)) return;
   /* scanner: KITT sweep, faster after a new packet */
   const dt = t - scanLast; scanLast = t;
   const speed = (t < scanFastUntil ? 34 : 16) * ((ws && ws.readyState === 1) ? 1 : 0.3);
@@ -953,8 +963,8 @@ function frame(t) {
   const head = Math.round(scanPos);
   scanCells.forEach((c, i) => {
     c.v = i === head ? 1 : Math.max(0.06, c.v - dt / 380);
-    c.el.style.opacity = c.v.toFixed(2);
-    c.el.style.boxShadow = c.v > .6 ? `0 0 ${Math.round(14 * c.v)}px var(--red)` : "none";
+    const o = c.v.toFixed(2);
+    if (o !== c.o) { c.o = o; c.el.style.opacity = o; }
   });
   document.querySelector("#carscan").setAttribute("transform", `translate(0 ${(head / 15) * 216})`);
 
@@ -977,7 +987,6 @@ function frame(t) {
     const key = JSON.stringify([tires(), sensors && sensors.gen]);
     if ($("dlg-tire").open && key !== tirePaintKey) { tirePaintKey = key; tirePaint(); }
   }
-  requestAnimationFrame(frame);
 }
 seg("sig", "----", 4); seg("noise", "----", 4); seg("lastrssi", "----", 4);
 renderTires(); renderLog(); setLink(false); drawHist();
