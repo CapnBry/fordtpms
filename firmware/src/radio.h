@@ -1,11 +1,13 @@
 /*
- * SX1278 in FSK packet mode as a Ford TPMS receiver.
+ * FSK packet receiver for Ford TPMS: SX1278 (radio_sx127x.c) or LR1121
+ * (radio_lr1121.c), picked by board.h. This file and radio.c are chip
+ * independent; the chip backends implement radio_hw.h.
  *
  * The packet engine does the hard real-time work: bit synchronisation at
  * 19.23 kchip/s, sync-word match on 0x5556 (12 preamble chips + the "0110"
  * start delimiter, see tpms_ford.h), and a
- * fixed 16 byte payload = the 128 Manchester chips of one packet. DIO2 fires
- * on sync (we latch RSSI there), DIO0 on PayloadReady.
+ * fixed 16 byte payload = the 128 Manchester chips of one packet. RSSI is
+ * latched at the sync match.
  */
 #pragma once
 
@@ -26,7 +28,7 @@ typedef struct {
     uint32_t freq_hz;
     uint32_t bitrate;     /* chips per second */
     uint32_t rxbw_hz;     /* single-sided channel filter bandwidth */
-    uint8_t  lna_gain;    /* 1 (max) .. 6 (min) */
+    uint8_t  lna_gain;    /* 1 (max) .. 6 (min); SX1278 only, the LR1121 uses AGC */
     radio_sync_mode_t sync;
 } radio_config_t;
 
@@ -38,16 +40,32 @@ typedef struct {
     uint32_t err_checksum;
     uint32_t err_flags;       /* includes all-zero payloads */
     uint32_t fifo_overruns;
-    uint32_t irq_dio0, irq_dio2;  /* interrupt counts (0 if a DIO isn't wired) */
+    uint32_t irq_payload, irq_sync;  /* interrupts seen for payload / sync events (0 if not wired) */
     uint32_t polled_events;   /* events found by polling instead of IRQ */
     int16_t  noise_dbm;       /* smoothed RSSI while idle */
     int16_t  last_rssi_dbm;   /* RSSI latched at last sync */
     int16_t  best_rssi_dbm, worst_rssi_dbm;  /* over decoded packets */
     uint32_t last_decode_ms;
-    uint8_t  version;         /* RegVersion, 0x12 for SX1278 */
+    bool     present;         /* chip found at init */
+    char     chip[40];        /* e.g. "SX1278 v0x12", "LR1121 hw 0x22 fw 01.04" */
     bool     pll_locked;      /* synthesizer locked: false = receiver is not tuned, hears nothing */
-    uint32_t pll_unlocked_polls;  /* radio task polls (~5 ms each) that found the PLL unlocked */
+    uint32_t pll_unlocked_polls;  /* lock checks that found the PLL unlocked (SX1278 ~5 ms, LR1121 ~250 ms) */
 } radio_stats_t;
+
+/* What the fitted chip can do, for the CLI and web UI. */
+typedef struct {
+    const char *name;         /* "SX1278", "LR1121" */
+    uint32_t freq_min_hz, freq_max_hz;  /* accepted by radio_set_config */
+    const char *freq_note;    /* where the synthesizer is specified to lock */
+    bool     lna_gain;        /* radio_config_t.lna_gain is used */
+    bool     tx;              /* radio_tx_ford is supported */
+    int8_t   tx_default_dbm;  /* `tx` CLI power when none is given (high-power path) */
+    const char *tx_note;      /* power ranges of the two PA paths */
+} radio_caps_t;
+
+const radio_caps_t *radio_caps(void);
+/* Supported single-sided channel bandwidths in Hz, ascending. Returns count. */
+int radio_bandwidths(uint32_t *out, int max);
 
 /*
  * Reception diagnostics, kept in RAM:
@@ -101,16 +119,26 @@ void radio_default_config(radio_config_t *out);
 /* Noise floor history for the idle screen, one sample per ~250 ms. */
 int radio_rssi_history(int8_t *out, int max);
 
-/* Diagnostic: identify which GPIOs the SX1278 DIO0/1/2 and RESET drive. */
+/* Diagnostic: check the chip's control lines (SX1278: which GPIOs DIO0/1/2
+ * and RESET drive; LR1121: RESET, BUSY and the DIO IRQ line). */
 void radio_probe(FILE *out);
 
-/* Dump all SX1278 registers. */
+/* Dump the chip's registers (SX1278) or status, errors and counters (LR1121). */
 void radio_dump_regs(FILE *out);
+
+/*
+ * PLL lock scan: tunes to each of the `n` frequencies, reports whether the
+ * synthesizer locked, then restores the receive configuration. Frequencies
+ * outside radio_caps() are allowed so the lock detection itself can be
+ * checked. Returns the number locked.
+ */
+int radio_pll_scan(const uint32_t *freqs_hz, int n, FILE *out);
 
 /*
  * Transmit test: send `count` Ford frames of the 8 byte payload (checksum
  * included) at the current frequency, FSK +/-35 kHz, then return to RX.
- * pa_boost: PA_BOOST pin (2..17 dBm) or RFO pin (0..15 dBm).
+ * pa_boost: high-power path (SX1278 PA_BOOST 2..17 dBm, LR1121 HP PA
+ * -9..22 dBm) or low-power path (SX1278 RFO 0..15, LR1121 LP PA -17..14).
  */
 esp_err_t radio_tx_ford(const uint8_t payload[8], int count, int gap_ms, bool pa_boost, int power_dbm);
 

@@ -23,6 +23,9 @@ typedef struct {
 
 esp_err_t net_init(void);
 void net_get_status(net_status_t *out);
+/* Cheap checks for frequent callers (status LED). */
+bool net_enabled(void);
+bool net_connected(void);
 /* Wall clock (seconds) for an uptime in ms, or 0 if time isn't synced. */
 time_t net_wall_time(uint32_t uptime_ms);
 /* "YYYY-MM-DD hh:mm:ss" local time, or "" if time isn't synced. */

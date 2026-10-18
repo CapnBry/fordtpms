@@ -1,7 +1,7 @@
 /*
- * Ford TPMS receiver: SX1278 @ 315 MHz FSK -> decoder -> SSD1306 + CLI,
- * plus Wi-Fi web UI and MQTT when wifi_config.h has an SSID. BT is never
- * initialised.
+ * Ford TPMS receiver: SX1278 or LR1121 @ 315 MHz FSK -> decoder -> SSD1306
+ * (TTGO) or status LED (ESP32-C3) + CLI, plus Wi-Fi web UI and MQTT when
+ * wifi_config.h has an SSID. BT is never initialised.
  */
 #include <stdio.h>
 
@@ -10,36 +10,40 @@
 #include "board.h"
 #include "cli.h"
 #include "display.h"
-#include "driver/gpio.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_pm.h"
+#include "esp_system.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "ha_mqtt.h"
+#include "led.h"
 #include "net.h"
 #include "radio.h"
 #include "sensors.h"
 #include "settings.h"
+#include "soc/rtc_cntl_reg.h"
 #include "tires.h"
 
 static const char *TAG = "tpms";
-static esp_timer_handle_t s_led_timer;
 
-static void led_off(void *arg)
-{
-    gpio_set_level(PIN_LED, 0);
-}
-
-static void led_blink(void)
-{
-    gpio_set_level(PIN_LED, 1);
-    esp_timer_stop(s_led_timer);
-    esp_timer_start_once(s_led_timer, 60 * 1000);
-}
+/*
+ * Crash-loop rescue for boards without an auto-reset circuit: if the firmware
+ * crashes CRASH_LOOP_LIMIT times in a row, each within CRASH_STABLE_MS of
+ * boot, the next boot goes to the ROM download mode so it can be reflashed
+ * without touching the board.
+ */
+#define CRASH_LOOP_LIMIT 3
+#define CRASH_STABLE_MS  30000
+#define CRASH_MAGIC      0x7e5c0de5u
+static RTC_NOINIT_ATTR uint32_t s_crash_magic, s_crash_count;
+static esp_timer_handle_t s_stable_timer;
 
 void app_on_packet(const tpms_ford_t *p, int rssi_dbm, uint32_t ms)
 {
     bool new_burst = sensors_add(p, rssi_dbm, ms);
-    led_blink();
+    led_packet();
     char temp[8];
     if (p->temp_valid) snprintf(temp, sizeof(temp), "%dC", p->temp_c);
     else snprintf(temp, sizeof(temp), "n/a");
@@ -83,20 +87,64 @@ void app_assign_tire(tire_pos_t pos, uint32_t id)
     ha_mqtt_tires_changed();
 }
 
+bool app_can_reboot_to_bootloader(void)
+{
+#ifdef RTC_CNTL_FORCE_DOWNLOAD_BOOT
+    return true;
+#else
+    return false;
+#endif
+}
+
+void app_reboot_to_bootloader(void)
+{
+#ifdef RTC_CNTL_FORCE_DOWNLOAD_BOOT
+    ESP_LOGW(TAG, "rebooting into the ROM download mode");
+    led_bootloader();
+    vTaskDelay(pdMS_TO_TICKS(50));  /* let the log drain */
+    /* The ROM checks this bit after a software reset; esptool's watchdog
+     * reset (--after watchdog-reset) boots the app again. */
+    REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+    esp_restart();
+#endif
+}
+
+static void boot_stable(void *arg)
+{
+    s_crash_count = 0;
+}
+
+static void crash_loop_check(void)
+{
+    esp_reset_reason_t why = esp_reset_reason();
+    bool crash = why == ESP_RST_PANIC || why == ESP_RST_INT_WDT || why == ESP_RST_TASK_WDT;
+    if (s_crash_magic != CRASH_MAGIC) {
+        s_crash_magic = CRASH_MAGIC;
+        s_crash_count = 0;
+    }
+    s_crash_count = crash ? s_crash_count + 1 : 0;
+    if (s_crash_count >= CRASH_LOOP_LIMIT && app_can_reboot_to_bootloader()) {
+        ESP_LOGE(TAG, "%u crashes in a row: entering ROM download mode for reflashing", (unsigned)s_crash_count);
+        s_crash_count = 0;
+        app_reboot_to_bootloader();
+    }
+    if (s_crash_count) ESP_LOGW(TAG, "crash reset %u of %d before the ROM loader rescue", (unsigned)s_crash_count,
+                                CRASH_LOOP_LIMIT);
+    esp_timer_create_args_t ta = {.callback = boot_stable, .name = "stable"};
+    esp_timer_create(&ta, &s_stable_timer);
+    esp_timer_start_once(s_stable_timer, CRASH_STABLE_MS * 1000ULL);
+}
+
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Ford TPMS receiver starting");
+    ESP_LOGI(TAG, "Ford TPMS receiver starting on %s", BOARD_NAME);
+    led_init();
+    crash_loop_check();
 
     /* CPU frequency scaling: 160 MHz when busy, 80 MHz when idle. 80 MHz keeps
      * APB at full speed for the UART/SPI/I2C peripherals. No light sleep. */
     esp_pm_config_t pm = {.max_freq_mhz = 160, .min_freq_mhz = 80, .light_sleep_enable = false};
     ESP_ERROR_CHECK(esp_pm_configure(&pm));
-
-    gpio_config_t led = {.pin_bit_mask = 1ULL << PIN_LED, .mode = GPIO_MODE_OUTPUT};
-    gpio_config(&led);
-    gpio_set_level(PIN_LED, 0);
-    esp_timer_create_args_t ta = {.callback = led_off, .name = "led"};
-    esp_timer_create(&ta, &s_led_timer);
 
     settings_init();
     tires_init();
@@ -115,5 +163,6 @@ void app_main(void)
     if (settings_load("display", &ds, sizeof(ds))) display_set_settings(&ds);
     display_init();
     if (net_init() != ESP_OK) ESP_LOGE(TAG, "Wi-Fi init failed");
+    led_start();
     ESP_ERROR_CHECK(cli_start());
 }

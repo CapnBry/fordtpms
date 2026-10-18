@@ -60,6 +60,7 @@ static esp_err_t flush(void)
     return err;
 }
 
+#if BOARD_HAS_OLED
 static esp_err_t panel_init(void)
 {
     static const uint8_t init[] = {
@@ -86,6 +87,7 @@ static esp_err_t panel_init(void)
     static const uint8_t on[] = {0xAF};
     return cmd(on, 1);
 }
+#endif
 
 /* Orbit through all GFX_SHIFT_X x GFX_SHIFT_Y offsets in a boustrophedon path,
  * so consecutive steps move by one pixel. */
@@ -229,6 +231,13 @@ static void display_task(void *arg)
 
 esp_err_t display_init(void)
 {
+#if !BOARD_HAS_OLED
+    /* Nothing to drive. The rendering code stays built (the host preview and
+     * `screen` share it), so keep the task referenced. */
+    (void)display_task;
+    ESP_LOGI(TAG, "no display on this board");
+    return ESP_ERR_NOT_SUPPORTED;
+#else
     i2c_master_bus_config_t bus = {
         .i2c_port = -1,
         .sda_io_num = PIN_OLED_SDA,
@@ -262,6 +271,7 @@ esp_err_t display_init(void)
     s_activity_ms = (uint32_t)(esp_timer_get_time() / 1000);
     xTaskCreatePinnedToCore(display_task, "display", 4096, NULL, 5, NULL, 0);
     return err;
+#endif
 }
 
 void display_get_settings(display_settings_t *out)

@@ -63,14 +63,18 @@ static int cmd_metrics(int argc, char **argv)
     if (!ns.enabled) printf("wifi          off (no SSID in wifi_config.h)\n");
     else if (!ns.connected) printf("wifi          connecting to \"%s\"\n", ns.ssid);
     else printf("wifi          %s, %d dBm, http://%s/ (%s.local)\n", ns.ip, ns.rssi_dbm, ns.ip, ns.hostname);
-    printf("battery       %d mV\n", app_battery_mv());
-    printf("--- radio (SX1278 v0x%02x) ---\n", rs.version);
+    int batt = app_battery_mv();
+    if (batt >= 0) printf("battery       %d mV\n", batt);
+    printf("--- radio (%s) ---\n", rs.present ? rs.chip : "NOT FOUND");
     printf("frequency     %.3f MHz\n", rc.freq_hz / 1e6);
-    if (rs.pll_locked) printf("pll           locked\n");
-    else printf("pll           NOT LOCKED: receiver is not tuned and hears nothing (%u polls unlocked)\n",
+    if (rs.pll_locked) printf("pll           locked (%u checks unlocked since reset)\n", (unsigned)rs.pll_unlocked_polls);
+    else printf("pll           NOT LOCKED: receiver is not tuned and hears nothing (%u checks unlocked)\n",
                 (unsigned)rs.pll_unlocked_polls);
-    printf("chip rate     %u /s, rx bw %u Hz, lna G%u, sync %s\n", (unsigned)rc.bitrate,
-           (unsigned)rc.rxbw_hz, rc.lna_gain, sync_name(rc.sync));
+    char lna[8];
+    if (radio_caps()->lna_gain) snprintf(lna, sizeof(lna), "G%u", rc.lna_gain);
+    else snprintf(lna, sizeof(lna), "AGC");
+    printf("chip rate     %u /s, rx bw %u Hz, lna %s, sync %s\n", (unsigned)rc.bitrate, (unsigned)rc.rxbw_hz, lna,
+           sync_name(rc.sync));
     printf("noise floor   %d dBm\n", rs.noise_dbm);
     printf("sync matches  %u\n", (unsigned)rs.syncs);
     printf("payloads      %u\n", (unsigned)rs.payloads);
@@ -79,7 +83,7 @@ static int cmd_metrics(int argc, char **argv)
     printf("err checksum  %u\n", (unsigned)rs.err_checksum);
     printf("err flags     %u\n", (unsigned)rs.err_flags);
     printf("fifo overrun  %u\n", (unsigned)rs.fifo_overruns);
-    printf("irq dio0/dio2 %u / %u (polled %u)\n", (unsigned)rs.irq_dio0, (unsigned)rs.irq_dio2,
+    printf("irq pay/sync  %u / %u (polled %u)\n", (unsigned)rs.irq_payload, (unsigned)rs.irq_sync,
            (unsigned)rs.polled_events);
     printf("last rssi     %d dBm\n", rs.last_rssi_dbm);
     if (rs.decoded) {
@@ -88,6 +92,7 @@ static int cmd_metrics(int argc, char **argv)
         printf("rssi best/wst %d / %d dBm\n", rs.best_rssi_dbm, rs.worst_rssi_dbm);
         printf("last packet   %s ago\n", age);
     }
+    if (!ds.present) return 0;
     printf("--- display ---\n");
     printf("present       %s\n", ds.present ? "yes" : "no");
     printf("screen        %s, %s, shift (%d,%d)\n", ds.screen ? ds.screen : "-", ds.dimmed ? "dimmed" : "bright",
@@ -215,8 +220,11 @@ static int cmd_tires(int argc, char **argv)
 
 /* -------------------------------------------------------------- radio -- */
 
-#define PLL_WARNING "WARNING: PLL NOT LOCKED at %.3f MHz. The SX1278 cannot tune here (specified 137-175 " \
-                    "and 410-525 MHz); the receiver hears nothing. Settings were applied and saved anyway.\n"
+static void pll_warning(uint32_t freq_hz)
+{
+    printf("WARNING: PLL NOT LOCKED at %.3f MHz. The %s cannot tune here (%s); the receiver hears nothing. "
+           "Settings were applied and saved anyway.\n", freq_hz / 1e6, radio_caps()->name, radio_caps()->freq_note);
+}
 
 static int cmd_radio(int argc, char **argv)
 {
@@ -226,7 +234,7 @@ static int cmd_radio(int argc, char **argv)
         radio_default_config(&c);
         esp_err_t err = app_set_radio(&c);
         printf("radio settings reset to defaults\n");
-        if (err == ESP_ERR_INVALID_STATE) printf(PLL_WARNING, c.freq_hz / 1e6);
+        if (err == ESP_ERR_INVALID_STATE) pll_warning(c.freq_hz);
         return err == ESP_OK ? 0 : 1;
     }
     if (argc == 1) {
@@ -256,11 +264,12 @@ static int cmd_radio(int argc, char **argv)
     }
     esp_err_t err = app_set_radio(&c);
     if (err == ESP_ERR_INVALID_STATE) {
-        printf(PLL_WARNING, c.freq_hz / 1e6);
+        pll_warning(c.freq_hz);
         return 1;
     }
     if (err != ESP_OK) {
-        printf("invalid: %s\n", esp_err_to_name(err));
+        printf("invalid: %s (frequency %.0f-%.0f MHz, lna 1-6, bitrate 1200-300000)\n", esp_err_to_name(err),
+               radio_caps()->freq_min_hz / 1e6, radio_caps()->freq_max_hz / 1e6);
         return 1;
     }
     return 0;
@@ -275,6 +284,31 @@ static int cmd_regs(int argc, char **argv)
 static int cmd_probe(int argc, char **argv)
 {
     radio_probe(stdout);
+    return 0;
+}
+
+static int cmd_pllscan(int argc, char **argv)
+{
+    static uint32_t f[400];
+    int n = 0;
+    if (argc == 1) {
+        /* The 315 MHz TPMS band plus reference points; 100 and 1000 MHz are outside the
+         * sub-GHz synthesizer ranges, so they show what a failed lock looks like. */
+        static const double ref[] = {100, 137, 175, 250, 433.92, 868, 915, 1000};
+        for (size_t i = 0; i < sizeof(ref) / sizeof(ref[0]); i++) f[n++] = (uint32_t)(ref[i] * 1e6 + 0.5);
+        for (int k = 300; k <= 330; k += 5) f[n++] = (uint32_t)k * 1000000u;
+    } else if (argc == 4) {
+        double start = atof(argv[1]), stop = atof(argv[2]), step = atof(argv[3]);
+        if (start < 1 || stop < start || step < 0.001 || stop > 3000 || (stop - start) / step >= 400) {
+            printf("need 1 <= start <= stop <= 3000 MHz and at most 400 steps\n");
+            return 1;
+        }
+        for (double x = start; x <= stop + 1e-9 && n < 400; x += step) f[n++] = (uint32_t)(x * 1e6 + 0.5);
+    } else {
+        printf("usage: pllscan [start_MHz stop_MHz step_MHz]\n");
+        return 1;
+    }
+    radio_pll_scan(f, n, stdout);
     return 0;
 }
 
@@ -396,7 +430,7 @@ static int cmd_tx(int argc, char **argv)
 {
     /* Default: fake ID feedf00d, 38 PSI, 29 C, rest (same code as a real sensor here). */
     uint8_t b[8] = {0xfe, 0xed, 0xf0, 0x0d, 0x98, 0x55, 0x06, 0};
-    int count = 4, gap_ms = 50, dbm = 2;
+    int count = 4, gap_ms = 50, dbm = radio_caps()->tx_default_dbm;
     bool pa_boost = true, fix = true;
     for (int i = 1; i < argc; i++) {
         size_t n;
@@ -406,7 +440,8 @@ static int cmd_tx(int argc, char **argv)
         else if (i + 1 < argc && !strcmp(argv[i], "rfo")) pa_boost = false, dbm = atoi(argv[++i]);
         else if (parse_hex(argv[i], b, &n)) fix = n == 7;
         else {
-            printf("usage: tx [7 or 8 hex bytes] [count n] [gap ms] [pa 2-17 | rfo 0-15]\n");
+            printf("usage: tx [7 or 8 hex bytes] [count n] [gap ms] [pa dBm | rfo dBm]\n  %s: %s\n",
+                   radio_caps()->name, radio_caps()->tx_note);
             return 1;
         }
     }
@@ -414,12 +449,16 @@ static int cmd_tx(int argc, char **argv)
     tpms_ford_t pkt;
     tpms_ford_status_t st = tpms_ford_decode_bytes(b, &pkt);
     if (st != TPMS_FORD_OK) printf("warning: payload does not decode (%s), sending anyway\n", tpms_ford_status_str(st));
+    if (!radio_caps()->tx) {
+        printf("the %s transmit test is not implemented\n", radio_caps()->name);
+        return 1;
+    }
     radio_stats_t rs;
     radio_get_stats(&rs);
     if (!rs.pll_locked) printf("warning: PLL not locked at this frequency, nothing will be transmitted on it\n");
     esp_err_t err = radio_tx_ford(b, count, gap_ms, pa_boost, dbm);
     printf("tx %02x%02x%02x%02x%02x%02x%02x%02x x%d %s %d dBm: %s\n", b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-           count, pa_boost ? "PA_BOOST" : "RFO", dbm, esp_err_to_name(err));
+           count, pa_boost ? "pa" : "rfo", dbm, esp_err_to_name(err));
     return err == ESP_OK ? 0 : 1;
 }
 
@@ -486,7 +525,7 @@ static int cmd_screen(int argc, char **argv)
 
 static int cmd_tasks(int argc, char **argv)
 {
-    const char *names[] = {"radio", "display", "web", "httpd", "mqtt_task", "IDLE0", "IDLE1"};
+    const char *names[] = {"radio", "display", "led", "web", "httpd", "mqtt_task", "IDLE", "IDLE0", "IDLE1"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         TaskHandle_t t = xTaskGetHandle(names[i]);
         if (t) printf("%-10s stack free %u\n", names[i], (unsigned)uxTaskGetStackHighWaterMark(t));
@@ -497,6 +536,18 @@ static int cmd_tasks(int argc, char **argv)
 static int cmd_reboot(int argc, char **argv)
 {
     esp_restart();
+    return 0;
+}
+
+static int cmd_bootloader(int argc, char **argv)
+{
+    if (!app_can_reboot_to_bootloader()) {
+        printf("not supported on this chip: hold BOOT and reset instead\n");
+        return 1;
+    }
+    printf("entering ROM download mode; flash with esptool --before no-reset --after watchdog-reset\n");
+    fflush(stdout);
+    app_reboot_to_bootloader();
     return 0;
 }
 
@@ -516,13 +567,17 @@ esp_err_t cli_start(void)
          .hint = "[freq MHz] [bw kHz] [lna 1-6] [sync 5556|aaa9|5555] [bitrate cps] | defaults", .func = cmd_radio},
         {.command = "rflog", .help = "RF energy events and strong raw payloads (reception diagnostics)",
          .hint = "[clear]", .func = cmd_rflog},
-        {.command = "regs", .help = "Dump SX1278 registers", .func = cmd_regs},
-        {.command = "probe", .help = "Identify SX1278 DIO/RESET wiring", .func = cmd_probe},
+        {.command = "regs", .help = "Dump radio registers (SX1278) or status, errors and counters (LR1121)",
+         .func = cmd_regs},
+        {.command = "probe", .help = "Check the radio's control lines (DIO/IRQ, RESET, BUSY)", .func = cmd_probe},
+        {.command = "pllscan",
+         .help = "Report PLL lock per frequency, then resume RX. No args: reference points + 300-330 MHz",
+         .hint = "[start_MHz stop_MHz step_MHz]", .func = cmd_pllscan},
         {.command = "raw", .help = "Log every raw payload (hex) at INFO", .hint = "on|off", .func = cmd_raw},
         {.command = "inject", .help = "Feed a packet through the pipeline (default: rtl_433 sample)",
          .hint = "[hex bytes] [rssi]", .func = cmd_inject},
         {.command = "tx", .help = "Transmit test Ford frames at the RX frequency (default fake ID feedf00d)",
-         .hint = "[hex bytes] [count n] [gap ms] [pa 2-17 | rfo 0-15]", .func = cmd_tx},
+         .hint = "[hex bytes] [count n] [gap ms] [pa dBm | rfo dBm]", .func = cmd_tx},
         {.command = "display",
          .help = "Show or set display (saved): display bright 143 dim 1 dim_after 120 shift 30 | wake | defaults",
          .hint = "[bright n] [dim n] [dim_after s] [shift s] | wake | defaults", .func = cmd_display},
@@ -530,6 +585,8 @@ esp_err_t cli_start(void)
         {.command = "screen", .help = "Print the current OLED frame as text", .func = cmd_screen},
         {.command = "tasks", .help = "Task stack headroom", .func = cmd_tasks},
         {.command = "reboot", .help = "Restart the ESP32", .func = cmd_reboot},
+        {.command = "bootloader", .help = "Reboot into the ROM download mode for flashing (ESP32-C3)",
+         .func = cmd_bootloader},
     };
 
     esp_console_repl_t *repl = NULL;
@@ -540,7 +597,7 @@ esp_err_t cli_start(void)
     esp_console_dev_uart_config_t ucfg = {
         .channel = CONFIG_ESP_CONSOLE_UART_NUM,
         .baud_rate = CONFIG_ESP_CONSOLE_UART_BAUDRATE,
-        .tx_gpio_num = -1,  /* default console pins: GPIO1/GPIO3 -> USB bridge */
+        .tx_gpio_num = -1,  /* default console pins -> USB bridge (ESP32: GPIO1/3, ESP32-C3: GPIO21/20) */
         .rx_gpio_num = -1,
     };
     ESP_ERROR_CHECK(esp_console_new_repl_uart(&ucfg, &rcfg, &repl));

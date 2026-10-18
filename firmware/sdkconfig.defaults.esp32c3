@@ -1,0 +1,7 @@
+# ESP32-C3 + LR1121 board, on top of sdkconfig.defaults (ESP-IDF loads
+# sdkconfig.defaults.<target> automatically).
+
+# Console + logs on UART0 (GPIO21 TX / GPIO20 RX) to the external USB-TTL
+# adapter. The built-in USB-Serial-JTAG isn't wired, so no secondary console.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

@@ -11,8 +11,11 @@ compile_commands.json
 # the per-environment sdkconfig is regenerated from it on build.
 firmware/sdkconfig.*
 !firmware/sdkconfig.defaults
+!firmware/sdkconfig.defaults.esp32c3
 firmware/sdkconfig
 firmware/sdkconfig.old
+firmware/test/nomad_lr1121/sdkconfig.*
+!firmware/test/nomad_lr1121/sdkconfig.defaults
 firmware/managed_components/
 firmware/dependencies.lock
 
@@ -36,3 +39,4 @@ __pycache__/
 
 # Local Wi-Fi / MQTT credentials (template: firmware/src/wifi_config.example.h)
 firmware/src/wifi_config.h
+tools/watch-runs/

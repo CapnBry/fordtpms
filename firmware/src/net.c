@@ -126,6 +126,16 @@ void net_get_status(net_status_t *out)
     }
 }
 
+bool net_enabled(void)
+{
+    return WIFI_SSID[0] != 0;
+}
+
+bool net_connected(void)
+{
+    return s_connected;
+}
+
 time_t net_wall_time(uint32_t uptime_ms)
 {
     time_t now = time(NULL);

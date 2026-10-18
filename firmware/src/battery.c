@@ -23,6 +23,7 @@ static int64_t s_cached_us;
 void battery_init(void)
 {
     s_lock = xSemaphoreCreateMutex();
+#if BOARD_HAS_BATT
     adc_unit_t unit;
     if (adc_oneshot_io_to_channel(PIN_BATT_ADC, &unit, &s_chan) != ESP_OK) return;
     adc_oneshot_unit_init_cfg_t ucfg = {.unit_id = unit};
@@ -42,6 +43,9 @@ void battery_init(void)
         ESP_LOGW(TAG, "no ADC calibration, using raw estimate");
         s_cali = NULL;
     }
+#else
+    (void)TAG;  /* no battery sense on this board: battery_read_mv() returns -1 */
+#endif
 }
 
 int battery_read_mv(void)
@@ -62,7 +66,9 @@ int battery_read_mv(void)
         else mv = raw * 3300 / 4095;
         sum += mv;
     }
+#if BOARD_HAS_BATT
     s_cached_mv = sum / 8 * BATT_DIVIDER;
+#endif
     s_cached_us = now;
     int mv = s_cached_mv;
     xSemaphoreGive(s_lock);

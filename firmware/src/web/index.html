@@ -7,6 +7,7 @@
 <!-- favicon: tire over two lit Larson scanner segments -->
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='13' r='12' fill='%23151515' stroke='%238a8a92' stroke-width='1.2'/%3E%3Ccircle cx='16' cy='13' r='10.6' fill='none' stroke='%235c5c64' stroke-width='2.4' stroke-dasharray='2.2 1.9'/%3E%3Ccircle cx='16' cy='13' r='6.2' fill='%239a9aa2'/%3E%3Ccircle cx='16' cy='13' r='4.4' fill='%232a2a2e'/%3E%3Ccircle cx='16' cy='13' r='1.6' fill='%23c8c8cc'/%3E%3Crect x='1' y='26' width='30' height='6' rx='2' fill='%23000' stroke='%23555' stroke-width='.8'/%3E%3Crect x='3' y='27.5' width='5.5' height='3' rx='.8' fill='%23ff2414' opacity='.15'/%3E%3Crect x='9.5' y='27.5' width='5.5' height='3' rx='.8' fill='%23ff2414' opacity='.45'/%3E%3Crect x='16' y='27.5' width='5.5' height='3' rx='.8' fill='%23ff2414'/%3E%3Crect x='22.5' y='27.5' width='5.5' height='3' rx='.8' fill='%23ff2414' opacity='.15'/%3E%3C/svg%3E">
 <style>
+[hidden] { display: none !important; }
 :root {
   --bg: #050505;
   --panel: #0d0d0f;
@@ -266,7 +267,7 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
     <div class="clock"><span>LINK</span><i class="hb" id="hb"></i> &nbsp; <span id="host">----</span><br><span id="clock">--</span></div>
   </header>
   <div class="pll-alarm" id="pll-alarm"><b>RADIO NOT TUNED</b> &middot; PLL NOT LOCKED AT <span id="pll-freq">---</span>
-    <small>The SX1278 synthesizer cannot reach this frequency (specified 137&ndash;175 and 410&ndash;525 MHz), so the
+    <small>The <span id="pll-chip">radio</span> synthesizer cannot reach this frequency (<span id="pll-note">see CLI</span>), so the
     receiver hears nothing. No packets can be received until the frequency is changed or the radio is replaced.</small></div>
   <div class="scanner" id="scanner"></div>
 
@@ -401,7 +402,7 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
 
 <dialog id="dlg-radio">
   <form method="dialog" id="f-radio">
-    <div class="m-head"><h3>Radio Configuration</h3><small>SX1278 FSK receiver &middot; saved to flash</small><div class="m-scan"></div></div>
+    <div class="m-head"><h3>Radio Configuration</h3><small><span id="r-chip">FSK</span> receiver &middot; saved to flash</small><div class="m-scan"></div></div>
     <div class="m-body">
       <div class="field"><label for="r-freq">Frequency</label><input id="r-freq" type="number" min="137" max="525" step="0.001" required><span class="hint">MHz</span></div>
       <div class="field"><label for="r-bw">Bandwidth</label><select id="r-bw"></select><span class="hint">kHz</span></div>
@@ -728,7 +729,11 @@ function onStatus(m) {
   $("freq").classList.toggle("unlocked", m.pll === false);
   $("pll-alarm").classList.toggle("show", m.pll === false);
   $("pll-freq").textContent = (m.freq / 1e6).toFixed(3) + " MHz";
-  $("rfcfg").textContent = `BW ${(m.bw / 1000).toFixed(1)} kHz · LNA G${m.lna}`;
+  const r = m.radio || {};
+  $("rfcfg").textContent = `BW ${(m.bw / 1000).toFixed(1)} kHz · ` + (r.lna === false ? "AGC" : `LNA G${m.lna}`);
+  $("pll-chip").textContent = r.name || "radio";
+  $("pll-note").textContent = r.note || "";
+  $("open-display").hidden = !(m.disp && m.disp.present);
   $("host").textContent = `${m.host.toUpperCase()} · ${m.ip}`;
   $("clock").textContent = m.time || ("UPTIME " + fmtUp(m.now));
   seg("noise", m.noise, 4);
@@ -892,17 +897,21 @@ $("t-clear").addEventListener("click", () => {
 });
 
 /* radio */
-(function fillBw() {   /* the bandwidths the SX1278 supports: 32 MHz / (mant * 2^(exp+2)) */
-  const bws = [];
-  for (let e = 1; e <= 7; e++) for (const m of [16, 20, 24]) bws.push(32e6 / (m * Math.pow(2, e + 2)));
-  bws.sort((a, b) => a - b).forEach(hz => {
+function fillRadio(r) {   /* limits and bandwidths of the fitted chip (status.radio) */
+  $("r-chip").textContent = `${r.name} FSK`;
+  $("r-freq").min = r.fmin / 1e6; $("r-freq").max = r.fmax / 1e6;
+  $("r-bw").innerHTML = "";
+  r.bws.forEach(hz => {
     const o = document.createElement("option");
     o.value = (hz / 1000).toFixed(1); o.textContent = "\u00b1" + (hz / 1000).toFixed(1);
     $("r-bw").appendChild(o);
   });
-})();
+  $("r-lna").disabled = !r.lna;
+  $("r-lna").title = r.lna ? "" : `${r.name}: automatic gain control, the setting is not used`;
+}
 function openRadio() {
   if (!status) return;
+  if (status.radio) fillRadio(status.radio);
   $("r-freq").value = (status.freq / 1e6).toFixed(3);
   $("r-bw").value = (status.bw / 1000).toFixed(1);
   $("r-lna").value = status.lna;
