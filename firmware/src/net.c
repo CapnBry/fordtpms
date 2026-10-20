@@ -105,6 +105,8 @@ esp_err_t net_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
+    /* Keep the radio awake: modem sleep misses traffic on a weak link. */
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_LOGI(TAG, "connecting to \"%s\"", WIFI_SSID);
     return ESP_OK;
 }

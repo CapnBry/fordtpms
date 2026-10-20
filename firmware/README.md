@@ -270,6 +270,24 @@ warning). The example has an empty SSID, so Wi-Fi stays off. An empty
 
 The `wifi` CLI command shows the connection, clock and MQTT state.
 
+### Wi-Fi power save
+
+`net.c` turns Wi-Fi power save off (`WIFI_PS_NONE`). With ESP-IDF's default
+modem sleep (`WIFI_PS_MIN_MODEM`) the radio sleeps between beacons, which on a
+weak link (about −77 dBm here) made the web UI and MQTT lag and drop out.
+Keeping the radio on costs about 56 mA:
+
+| C3 board, idle, at USB 4.87 V | `WIFI_PS_NONE` | `WIFI_PS_MIN_MODEM` |
+|---|---|---|
+| Average current | 100.0 mA | 43.8 mA |
+| Average power | 0.49 W | 0.22 W |
+| Current profile | flat, 99.6–100.3 mA | ~42 mA, short ~80 mA bursts every ~8.6 s |
+| Ping round trip, avg / max | 9 / 49 ms | 64 / 119 ms |
+
+Measured 2026-10-20 with an FNIRSI FNB48 USB meter: 90 s per mode, no web UI
+clients, before the size-optimized build settings. The extra ~6.5 Wh a day
+doesn't matter on USB power; on battery, go back to `WIFI_PS_MIN_MODEM`.
+
 ### Web UI
 
 `http://fordtpms.local/` (or the IP address from `wifi`). The page is a
