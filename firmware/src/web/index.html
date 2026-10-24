@@ -297,7 +297,7 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
         <div class="btn green" id="b-wifi">Wi-Fi</div>
         <div class="btn green" id="b-mqtt">MQTT</div>
         <div class="btn amber" id="b-ntp">Time Sync</div>
-        <div class="btn amber" id="b-batt">Aux Power</div>
+        <div class="btn green" id="b-pll">PLL Lock</div>
       </div>
     </section>
 
@@ -351,7 +351,6 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
         <div class="lcd"><span class="lbl">WORST dBm</span><span class="seg amber" id="t-worst"></span></div>
         <div class="lcd"><span class="lbl">LAST PKT</span><span class="seg amber" id="t-lastpkt"></span></div>
         <div class="lcd"><span class="lbl">UPTIME</span><span class="seg blue" id="t-up"></span></div>
-        <div class="lcd"><span class="lbl">BATTERY V</span><span class="seg blue" id="t-batt"></span></div>
         <div class="lcd"><span class="lbl">WIFI dBm</span><span class="seg blue" id="t-wifi"></span></div>
         <div class="lcd"><span class="lbl">MQTT PUB</span><span class="seg blue" id="t-mqtt"></span></div>
       </div>
@@ -404,16 +403,13 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
   <form method="dialog" id="f-radio">
     <div class="m-head"><h3>Radio Configuration</h3><small><span id="r-chip">FSK</span> receiver &middot; saved to flash</small><div class="m-scan"></div></div>
     <div class="m-body">
-      <div class="field"><label for="r-freq">Frequency</label><input id="r-freq" type="number" min="137" max="525" step="0.001" required><span class="hint">MHz</span></div>
+      <div class="field"><label for="r-freq">Frequency</label><input id="r-freq" type="number" step="0.001" required><span class="hint">MHz</span></div>
       <div class="field"><label for="r-bw">Bandwidth</label><select id="r-bw"></select><span class="hint">kHz</span></div>
-      <div class="field"><label for="r-lna">LNA gain</label><select id="r-lna">
-        <option value="1">G1 &middot; maximum</option><option value="2">G2</option><option value="3">G3</option>
-        <option value="4">G4</option><option value="5">G5</option><option value="6">G6 &middot; minimum</option></select><span class="hint"></span></div>
       <div class="field"><label for="r-sync">Sync word</label><select id="r-sync">
         <option value="5556">5556 &middot; normal polarity</option><option value="aaa9">AAA9 &middot; inverted</option>
         <option value="5555">5555 &middot; either polarity</option></select><span class="hint"></span></div>
-      <div class="field"><label for="r-bitrate">Chip rate</label><input id="r-bitrate" type="number" min="1200" max="300000" step="1" required><span class="hint">chip/s</span></div>
-      <div class="m-note">Same settings as the <b>radio</b> CLI command. Defaults: 315.000 MHz, 83.3 kHz, G1, 5556, 19231 chip/s. Changes apply immediately and survive reboots.</div>
+      <div class="field"><label for="r-bitrate">Chip rate</label><input id="r-bitrate" type="number" step="1" required><span class="hint">chip/s</span></div>
+      <div class="m-note">Same settings as the <b>radio</b> CLI command. <span id="r-limits"></span> Changes apply immediately and survive reboots.</div>
       <div class="m-err" id="r-err"></div>
     </div>
     <div class="m-foot">
@@ -730,7 +726,7 @@ function onStatus(m) {
   $("pll-alarm").classList.toggle("show", m.pll === false);
   $("pll-freq").textContent = (m.freq / 1e6).toFixed(3) + " MHz";
   const r = m.radio || {};
-  $("rfcfg").textContent = `BW ${(m.bw / 1000).toFixed(1)} kHz · ` + (r.lna === false ? "AGC" : `LNA G${m.lna}`);
+  $("rfcfg").textContent = `BW ${(m.bw / 1000).toFixed(1)} kHz`;
   $("pll-chip").textContent = r.name || "radio";
   $("pll-note").textContent = r.note || "";
   $("open-display").hidden = !(m.disp && m.disp.present);
@@ -748,7 +744,6 @@ function onStatus(m) {
   seg("t-best", m.decoded ? m.best_rssi : "----", 7); seg("t-worst", m.decoded ? m.worst_rssi : "----", 7);
   seg("t-lastpkt", m.decoded ? fmtAge(m.now - m.last_decode).replace("h", ".") : "--:--", 7);
   seg("t-up", fmtUp(m.now).replace(/^(\d+)d /, "$1."), 7);
-  seg("t-batt", m.batt > 0 ? (m.batt / 1000).toFixed(2) : "----", 7);
   seg("t-wifi", m.wifi_rssi || "----", 7);
   seg("t-mqtt", m.mqtt < 0 ? "OFF" : m.mqtt_pub, 7);
   $("uptime-lbl").textContent = `heap ${(m.heap / 1024).toFixed(0)}k · ${m.clients} viewer${m.clients === 1 ? "" : "s"}`;
@@ -756,7 +751,7 @@ function onStatus(m) {
   $("b-mqtt").classList.toggle("on", m.mqtt === 1);
   $("b-mqtt").title = m.mqtt < 0 ? "MQTT disabled" : m.mqtt ? "connected" : "disconnected";
   $("b-ntp").classList.toggle("on", !!m.time);
-  $("b-batt").classList.toggle("on", m.batt > 0);
+  $("b-pll").classList.toggle("on", m.pll === true);
   if (lastGen !== null && m.gen !== lastGen) { turboUntil = performance.now() + 1500; scanFastUntil = performance.now() + 3000; }
   lastGen = m.gen;
   drawHist();
@@ -897,38 +892,42 @@ $("t-clear").addEventListener("click", () => {
 });
 
 /* radio */
-function fillRadio(r) {   /* limits and bandwidths of the fitted chip (status.radio) */
+function setRadio(c) {    /* freq Hz, bw Hz, sync, bitrate */
+  $("r-freq").value = (c.freq / 1e6).toFixed(3);
+  $("r-bw").value = (c.bw / 1000).toFixed(1);
+  $("r-sync").value = c.sync;
+  $("r-bitrate").value = c.bitrate;
+}
+function fillRadio(r) {   /* limits, bandwidths and defaults of the fitted chip (status.radio) */
   $("r-chip").textContent = `${r.name} FSK`;
   $("r-freq").min = r.fmin / 1e6; $("r-freq").max = r.fmax / 1e6;
+  $("r-bitrate").min = r.brmin; $("r-bitrate").max = r.brmax;
+  const d = r.def;
+  $("r-limits").textContent = `${r.name}: ${r.fmin / 1e6}\u2013${r.fmax / 1e6} MHz (${r.note}), ` +
+    `${r.brmin}\u2013${r.brmax} chip/s. Defaults: ${(d.freq / 1e6).toFixed(3)} MHz, ` +
+    `\u00b1${(d.bw / 1000).toFixed(1)} kHz, ${d.sync}, ${d.bitrate} chip/s.`;
   $("r-bw").innerHTML = "";
   r.bws.forEach(hz => {
     const o = document.createElement("option");
     o.value = (hz / 1000).toFixed(1); o.textContent = "\u00b1" + (hz / 1000).toFixed(1);
     $("r-bw").appendChild(o);
   });
-  $("r-lna").disabled = !r.lna;
-  $("r-lna").title = r.lna ? "" : `${r.name}: automatic gain control, the setting is not used`;
 }
 function openRadio() {
   if (!status) return;
   if (status.radio) fillRadio(status.radio);
-  $("r-freq").value = (status.freq / 1e6).toFixed(3);
-  $("r-bw").value = (status.bw / 1000).toFixed(1);
-  $("r-lna").value = status.lna;
-  $("r-sync").value = status.sync;
-  $("r-bitrate").value = status.bitrate;
+  setRadio(status);
   msg("r-err", "");
   $("dlg-radio").showModal();
 }
 $("open-radio").addEventListener("click", openRadio);
 $("r-save").addEventListener("click", () => {
   if (!$("f-radio").reportValidity()) return;
-  run("r-err", () => post("/api/radio", { freq: $("r-freq").value, bw: $("r-bw").value, lna: $("r-lna").value,
-                                          sync: $("r-sync").value, bitrate: $("r-bitrate").value }), $("dlg-radio"));
+  run("r-err", () => post("/api/radio", { freq: $("r-freq").value, bw: $("r-bw").value, sync: $("r-sync").value, bitrate: $("r-bitrate").value }), $("dlg-radio"));
 });
 $("r-defaults").addEventListener("click", () => run("r-err", async () => {
   await post("/api/radio", { defaults: 1 });
-  $("r-freq").value = "315.000"; $("r-bw").value = "83.3"; $("r-lna").value = 1; $("r-sync").value = "5556"; $("r-bitrate").value = 19231;
+  if (status && status.radio) setRadio(status.radio.def);
 }));
 
 /* display */

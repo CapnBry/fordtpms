@@ -105,7 +105,8 @@ const radio_caps_t radio_hw_caps = {
     .freq_min_hz = 150000000,
     .freq_max_hz = 960000000,
     .freq_note = "specified 150-960 MHz",
-    .lna_gain = false,
+    .bitrate_min = 600,
+    .bitrate_max = 300000,
     .tx = true,
     .tx_default_dbm = -9,
     .tx_note = "pa -9..22 dBm (high-power PA, wired on ExpressLRS LR1121 receivers) | rfo -17..14 dBm (low-power PA)",
@@ -246,10 +247,9 @@ static void clear_errors(void)
     cmd_write(OP_CLEAR_ERRORS, NULL, 0);
 }
 
-/* External LNA in front of the chip: report RSSI at the antenna. */
 static int rssi_from_raw(uint8_t raw)
 {
-    return -(int)raw / 2 - BOARD_LNA_GAIN_DB;
+    return -(int)raw / 2;
 }
 
 static int rssi_inst(void)
@@ -349,7 +349,7 @@ esp_err_t hw_apply(const radio_config_t *cfg, bool *locked)
     s_payload_len = (uint8_t)radio_payload_len(cfg->sync);
     uint8_t pkt[9] = {
         0, 32,      /* TX preamble bits (unused) */
-        0x00,       /* preamble detector off: the sync word is the preamble tail (as on the SX1278) */
+        0x00,       /* preamble detector off: the sync word is the preamble tail (as on the CC1101) */
         16,         /* sync word bits */
         0x00,       /* no address filtering */
         0x00,       /* fixed length */
@@ -648,7 +648,7 @@ void hw_dump(FILE *out)
             errors & ERR_HF_XOSC_START ? " HF_XOSC_START" : "", s_last_errors);
     fprintf(out, "pll           %s, RX re-entered %u times\n", s_locked ? "locked" : "NOT LOCKED",
             (unsigned)s_rx_restarts);
-    fprintf(out, "rssi now      %d dBm at antenna (%d dB external LNA removed)\n", rssi_inst(), BOARD_LNA_GAIN_DB);
+    fprintf(out, "rssi now      %d dBm\n", rssi_inst());
     if (cmd_read(OP_GET_STATS, NULL, 0, b, 8) == ESP_OK)
         fprintf(out, "gfsk stats    %u received, %u crc err, %u length err\n", b[0] << 8 | b[1], b[2] << 8 | b[3],
                 b[4] << 8 | b[5]);

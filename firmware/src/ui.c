@@ -31,8 +31,7 @@ static void fmt_psi(char *buf, int len, uint16_t psi_x4)
     else snprintf(buf, len, "%u.%u", tenths / 10, tenths % 10);
 }
 
-/* The SX1278 RSSI floor at 315 MHz / 83 kHz is about -85 dBm, so the useful
- * range for both the bars and the history graph is roughly -95..-35 dBm. */
+/* Useful range for both the bars and the history graph. */
 #define RSSI_MIN (-95)
 #define RSSI_MAX (-35)
 
@@ -138,14 +137,10 @@ void ui_render_idle(gfx_t *g, const ui_model_t *m, uint32_t frame)
     snprintf(buf, sizeof(buf), "%u", (unsigned)(m->syncs % 1000000));
     gfx_text(g, rx, gy + 21, buf, 1);
 
-    /* Bottom: uptime, battery, counters */
+    /* Bottom: uptime, counters */
     fmt_hms(buf, sizeof(buf), m->now_ms);
     gfx_text_small(g, 0, 48, "UP");
     gfx_text(g, 10, 47, buf, 1);
-    if (m->batt_mv > 0) {
-        snprintf(buf, sizeof(buf), "%d.%02dV", m->batt_mv / 1000, m->batt_mv % 1000 / 10);
-        gfx_text(g, W - gfx_text_width(buf, 1), 47, buf, 1);
-    }
     snprintf(buf, sizeof(buf), "PKT %u  BAD %u  IDS %d", (unsigned)m->decoded, (unsigned)m->bad, m->nsensors);
     gfx_text_small(g, 0, 56, buf);
 

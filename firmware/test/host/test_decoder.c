@@ -22,7 +22,7 @@ static size_t pack(const char *s, uint8_t *out, size_t max_bytes, int invert)
     return n;
 }
 
-/* Emulates the SX1278: sync on 0x5556, then the next 16 bytes land in the FIFO. */
+/* Emulates the radio's packet engine: sync on 0x5556, then the next 16 bytes land in the FIFO. */
 static int decode_like_radio(const uint8_t *chips, size_t nbits, tpms_ford_t *out)
 {
     int found = 0;

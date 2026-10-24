@@ -1,6 +1,6 @@
 /*
- * FSK packet receiver for Ford TPMS: SX1278 (radio_sx127x.c) or LR1121
- * (radio_lr1121.c), picked by board.h. This file and radio.c are chip
+ * FSK packet receiver for Ford TPMS: CC1101 (radio_cc1101.c) or LR1121
+ * (radio_lr1121.c), picked by the build target. This file and radio.c are chip
  * independent; the chip backends implement radio_hw.h.
  *
  * The packet engine does the hard real-time work: bit synchronisation at
@@ -28,7 +28,6 @@ typedef struct {
     uint32_t freq_hz;
     uint32_t bitrate;     /* chips per second */
     uint32_t rxbw_hz;     /* single-sided channel filter bandwidth */
-    uint8_t  lna_gain;    /* 1 (max) .. 6 (min); SX1278 only, the LR1121 uses AGC */
     radio_sync_mode_t sync;
 } radio_config_t;
 
@@ -47,17 +46,17 @@ typedef struct {
     int16_t  best_rssi_dbm, worst_rssi_dbm;  /* over decoded packets */
     uint32_t last_decode_ms;
     bool     present;         /* chip found at init */
-    char     chip[40];        /* e.g. "SX1278 v0x12", "LR1121 hw 0x22 fw 01.04" */
+    char     chip[40];        /* e.g. "CC1101 part 0x00 v0x14", "LR1121 hw 0x22 fw 01.04" */
     bool     pll_locked;      /* synthesizer locked: false = receiver is not tuned, hears nothing */
-    uint32_t pll_unlocked_polls;  /* lock checks that found the PLL unlocked (SX1278 ~5 ms, LR1121 ~250 ms) */
+    uint32_t pll_unlocked_polls;  /* lock checks that found the PLL unlocked (every ~250 ms) */
 } radio_stats_t;
 
 /* What the fitted chip can do, for the CLI and web UI. */
 typedef struct {
-    const char *name;         /* "SX1278", "LR1121" */
+    const char *name;         /* "CC1101", "LR1121" */
     uint32_t freq_min_hz, freq_max_hz;  /* accepted by radio_set_config */
     const char *freq_note;    /* where the synthesizer is specified to lock */
-    bool     lna_gain;        /* radio_config_t.lna_gain is used */
+    uint32_t bitrate_min, bitrate_max;  /* chip rates (chips/s) accepted by radio_set_config */
     bool     tx;              /* radio_tx_ford is supported */
     int8_t   tx_default_dbm;  /* `tx` CLI power when none is given (high-power path) */
     const char *tx_note;      /* power ranges of the two PA paths */
@@ -114,16 +113,17 @@ void radio_get_config(radio_config_t *out);
 /* Reprograms the chip. The config is applied even if the PLL can't lock at
  * the new frequency; that case returns ESP_ERR_INVALID_STATE. */
 esp_err_t radio_set_config(const radio_config_t *cfg);
+/* Defaults, with the bandwidth snapped to what the fitted chip supports. */
 void radio_default_config(radio_config_t *out);
 
 /* Noise floor history for the idle screen, one sample per ~250 ms. */
 int radio_rssi_history(int8_t *out, int max);
 
-/* Diagnostic: check the chip's control lines (SX1278: which GPIOs DIO0/1/2
- * and RESET drive; LR1121: RESET, BUSY and the DIO IRQ line). */
+/* Diagnostic: check the chip's control lines (CC1101: SPI, GDO0 and GDO2;
+ * LR1121: RESET, BUSY and the DIO IRQ line). */
 void radio_probe(FILE *out);
 
-/* Dump the chip's registers (SX1278) or status, errors and counters (LR1121). */
+/* Dump the chip's registers and status (CC1101) or status, errors and counters (LR1121). */
 void radio_dump_regs(FILE *out);
 
 /*
@@ -137,8 +137,8 @@ int radio_pll_scan(const uint32_t *freqs_hz, int n, FILE *out);
 /*
  * Transmit test: send `count` Ford frames of the 8 byte payload (checksum
  * included) at the current frequency, FSK +/-35 kHz, then return to RX.
- * pa_boost: high-power path (SX1278 PA_BOOST 2..17 dBm, LR1121 HP PA
- * -9..22 dBm) or low-power path (SX1278 RFO 0..15, LR1121 LP PA -17..14).
+ * pa_boost: high-power path (LR1121 HP PA -9..22 dBm) or low-power path
+ * (LR1121 LP PA -17..14). The CC1101 has one PA (-30..10 dBm) for both.
  */
 esp_err_t radio_tx_ford(const uint8_t payload[8], int count, int gap_ms, bool pa_boost, int power_dbm);
 

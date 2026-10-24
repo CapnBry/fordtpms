@@ -25,7 +25,6 @@ static const radio_config_t k_default_cfg = {
     .freq_hz = 315000000,
     .bitrate = 19231,      /* 52 us chips */
     .rxbw_hz = 83333,      /* +/-83 kHz: ~35 kHz deviation + sensor crystal error */
-    .lna_gain = 1,
     .sync = RADIO_SYNC_5556,
 };
 static radio_config_t s_cfg = k_default_cfg;
@@ -282,8 +281,8 @@ esp_err_t radio_init(radio_packet_cb_t cb)
     xTaskCreatePinnedToCore(radio_task, "radio", 4096, NULL, 10, &s_task, portNUM_PROCESSORS - 1);
     hw_start_irq();
 
-    ESP_LOGI(TAG, "%s RX %.3f MHz, %u chip/s, RxBw %u Hz, LNA G%u, sync %s", s_stats.chip, s_cfg.freq_hz / 1e6,
-             (unsigned)s_cfg.bitrate, (unsigned)s_cfg.rxbw_hz, s_cfg.lna_gain, sync_str(s_cfg.sync));
+    ESP_LOGI(TAG, "%s RX %.3f MHz, %u chip/s, RxBw %u Hz, sync %s", s_stats.chip, s_cfg.freq_hz / 1e6,
+             (unsigned)s_cfg.bitrate, (unsigned)s_cfg.rxbw_hz, sync_str(s_cfg.sync));
     return ESP_OK;
 }
 
@@ -327,8 +326,8 @@ esp_err_t radio_set_config(const radio_config_t *cfg)
 {
     if (cfg->freq_hz < radio_hw_caps.freq_min_hz || cfg->freq_hz > radio_hw_caps.freq_max_hz)
         return ESP_ERR_INVALID_ARG;
-    if (cfg->lna_gain < 1 || cfg->lna_gain > 6) return ESP_ERR_INVALID_ARG;
-    if (cfg->bitrate < 1200 || cfg->bitrate > 300000) return ESP_ERR_INVALID_ARG;
+    if (cfg->bitrate < radio_hw_caps.bitrate_min || cfg->bitrate > radio_hw_caps.bitrate_max)
+        return ESP_ERR_INVALID_ARG;
     if (!s_stats.present) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_cfg = *cfg;
@@ -336,8 +335,8 @@ esp_err_t radio_set_config(const radio_config_t *cfg)
     esp_err_t err = apply_config();
     radio_config_t now = s_cfg;
     xSemaphoreGive(s_lock);
-    ESP_LOGI(TAG, "reconfigured: %.3f MHz, %u chip/s, RxBw %u Hz, LNA G%u", now.freq_hz / 1e6,
-             (unsigned)now.bitrate, (unsigned)now.rxbw_hz, now.lna_gain);
+    ESP_LOGI(TAG, "reconfigured: %.3f MHz, %u chip/s, RxBw %u Hz", now.freq_hz / 1e6, (unsigned)now.bitrate,
+             (unsigned)now.rxbw_hz);
     return err;
 }
 
@@ -388,6 +387,7 @@ void radio_clear_log(void)
 void radio_default_config(radio_config_t *out)
 {
     *out = k_default_cfg;
+    out->rxbw_hz = hw_rxbw(out->rxbw_hz);
 }
 
 int radio_rssi_history(int8_t *out, int max)

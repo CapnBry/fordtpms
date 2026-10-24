@@ -1,8 +1,8 @@
-# Ford TPMS receiver (315 MHz, SX1278 or LR1121)
+# Ford TPMS receiver (315 MHz, CC1101 or LR1121)
 
 Receives Ford tire pressure sensors (VDO/Continental "S180084730Z" family, the
 `tpms_ford` decoder in [rtl_433](https://github.com/merbanan/rtl_433/blob/master/src/devices/tpms_ford.c)),
-shows them on the SSD1306 OLED (TTGO) or a status LED (C3 board), offers a
+shows them with a status LED, offers a
 serial CLI, and (with Wi-Fi configured) a live web UI and MQTT publishing with
 Home Assistant discovery.
 
@@ -11,34 +11,62 @@ PlatformIO environment each:
 
 | Environment | Board | Radio |
 |---|---|---|
-| `ttgo-lora32-v21` | TTGO/LilyGO LoRa32 v2.1, ESP32-PICO-D4 | SX1278, **can't tune 315 MHz** |
+| `esp32-cc1101` | 30-pin ESP32 DevKit (ESP32-WROOM-32) + CC1101 module | CC1101, 315 MHz in band |
 | `c3-lr1121` | ExpressLRS-style "Unified ESP32C3 LR1121" receiver, ESP32-C3 | LR1121, locks at 315 MHz |
 
 ## Hardware
 
-### TTGO LoRa32 v2.1 (SX1278)
+### ESP32 DevKit + CC1101
 
-TTGO/LilyGO LoRa32 v2.1 (T3 v1.6), ESP32-PICO-D4, 4 MB flash.
+A 30-pin ESP32 DevKit (ESP32-WROOM-32, 4 MB flash, CP2102/CH340 with auto-reset)
+and a TI CC1101 module with a 26 MHz crystal and a 315 MHz antenna. The CC1101 is
+specified for 300–348, 387–464 and 779–928 MHz, so 315 MHz is in band; its
+lock is checked anyway (below). Use a module matched for 315 MHz; the common
+433 MHz modules' filter and matching cost sensitivity at 315 MHz.
+
+All radio signals sit on the DevKit's right-hand header, which reads from the
+antenna end `23 22 TX RX 21 19 18 5 17 16 4 2 15 GND 3V3`:
 
 | Function | GPIO | Notes |
 |---|---|---|
-| OLED SDA / SCL | 21 / 22 | SSD1306 128x64 @ 0x3C, 400 kHz |
-| LED | 25 | blinks on each decoded packet |
-| Battery | 35 | ADC1_CH7, 2:1 divider |
-| SX1278 SCK / MISO / MOSI / NSS | 5 / 19 / 27 / 18 | SPI3, 8 MHz |
-| SX1278 RESET | 23 | verified with `probe` |
-| SX1278 DIO0 | 26 | PayloadReady interrupt (verified with `probe`) |
-| SX1278 DIO1 | 33 | wired, unused (DCLK in continuous mode, verified) |
-| SX1278 DIO2 | 32 | SyncAddress interrupt, used to latch RSSI (verified) |
+| CC1101 MOSI (SI) | 23 | VSPI IO_MUX pin |
+| CC1101 MISO (SO/GDO1) | 19 | VSPI IO_MUX pin; also read as CHIP_RDYn before each transfer |
+| CC1101 SCK | 18 | VSPI IO_MUX pin, 5 MHz |
+| CC1101 CSn | 5 | software chip select (waits for SO low, as the CC1101 requires) |
+| CC1101 GDO0 | 17 | end-of-packet interrupt |
+| CC1101 GDO2 | 16 | sync-word interrupt, RSSI latched there |
+| CC1101 VCC / GND | 3V3 / GND | bottom of the same header |
+| LED | 2 | DevKit's onboard LED, blinks on each decoded packet |
 
-**The SX1278 cannot receive 315 MHz.** It is sold as "137–525 MHz", but the
-datasheet only specifies 137–175 and 410–525 MHz. On this board the synthesizer
-locks from 137 to ~190 MHz and from ~360 MHz up, and **not** from ~200 to ~355 MHz
-(measured with the PllLock flag). At 315 MHz the receiver is not tuned at all
-and hears nothing. US Ford sensors (315 MHz) need a different radio, e.g. a
-CC1101. The firmware checks the PLL after every retune and reports an unlocked
-PLL in the log, in `metrics`, in `/api/state` (`"pll": false`) and as a banner
-in the web UI.
+How the pins were picked, performance first:
+
+* **SPI on VSPI's own IO_MUX pins** (18/19/23/5), so the SPI signals skip the
+  GPIO matrix and its input delay.
+* **GDO0/GDO2 on GPIO17/16**. These aren't strapping pins: the CC1101 drives
+  its GDOs from power-up (GDO0 outputs a clock until it's configured), so a GDO
+  on GPIO0/2/5/12/15 could change the boot mode. They also avoid GPIO36/39,
+  which get spurious interrupts whenever the SAR ADC powers up, including for
+  Wi-Fi (ESP32 errata 3.11). GPIO34/35 would work but are on the other
+  header.
+* **Adjacency, within that:** 19, 18, 5, 17 and 16 are five neighbouring header
+  pins, and 3V3/GND are at the bottom of the same row. The only pin that isn't
+  adjacent is MOSI on 23 (top of the row). Moving it to 21 would make all six
+  contiguous, but the whole bus would then go through the GPIO matrix.
+* GPIO16/17 are only free on WROOM modules. A WROVER board uses them for PSRAM;
+  there, move GDO0/GDO2 to GPIO4 and 21.
+
+Receiver setup: 2-FSK, 19 231 baud, ±81.25 kHz filter (162.5 kHz double-sided,
+the nearest to ±83 kHz), AGC, frequency offset compensation ±BW/4, DC filter
+on. Sync `0x5556` 16/16 bits, preamble quality gate off, fixed 16-byte payload,
+appended RSSI/LQI status. After a packet the chip stays in RX, so frames sent
+back to back aren't missed. The synthesizer is recalibrated every 60 s; each
+recalibration leaves the receiver deaf for ~0.8 ms. Lock: after calibration, `FSCAL1`
+reads 0x3F if the PLL could not lock (datasheet section 22.1). It's checked
+after each retune and every 250 ms. RSSI uses the datasheet's 74 dB offset.
+
+**Not yet tested on hardware.** Run `probe` first: it checks SO/CSn, SPI write
+and readback, and drives each GDO high and low to verify the wiring. Then run
+`pllscan`.
 
 ### ESP32-C3 + LR1121
 
@@ -59,7 +87,7 @@ hardware layout (`UNIFIED_ESP32C3_LR1121_RX`).
 
 Front end as configured by ExpressLRS for this board: crystal (no TCXO), DC-DC
 regulator, ExpressLRS's default RF switch table, RX boosted mode. RSSI is
-reported at the antenna: the LNA's 12 dB is subtracted, as ExpressLRS does.
+reported as the LR1121 measures it, so it includes the external LNA's gain.
 
 **The LR1121 locks at 315 MHz.** `pllscan` (lock = no `PLL_LOCK_ERR` from
 GetErrors, chip in FS mode) shows lock from 40 to 2890 MHz, including all of
@@ -91,7 +119,7 @@ download mode, as usual for the BOOT strap.
 ```bash
 cd firmware
 pio run -t upload                      # default env c3-lr1121: /dev/ttyAMA0, hands-free (below)
-pio run -e ttgo-lora32-v21 -t upload   # TTGO: builds and flashes /dev/ttyUSB0
+pio run -e esp32-cc1101 -t upload      # ESP32 DevKit + CC1101: /dev/ttyUSB0
 pio device monitor -e c3-lr1121        # 115200 baud, CLI prompt "tpms>"
 ```
 
@@ -130,7 +158,7 @@ Otherwise PlatformIO keeps the old sdkconfig and may not rebuild the
 bootloader. A stale bootloader with different console settings, for example,
 leaves the app's serial output silent.
 
-To restore the TTGO's original firmware, see `../backup/restore.sh`. The C3
+`../backup/` holds an older board's original flash image (`restore.sh`). The C3
 board's original ExpressLRS flash image is in `../backup/lr1121-c3/` (not in
 git); restore it with `esptool --chip esp32c3 -p /dev/ttyAMA0 --before no_reset
 write_flash 0 flash_4MB_elrs.bin` after `bootloader`.
@@ -144,10 +172,9 @@ Ford packets are FSK at 52 µs per chip (19 231 chip/s), deviation about ±35 kH
 ```
 
 Both radios run in **FSK packet mode**, so the radio does the timing-critical
-work. On the SX1278:
+work. On the CC1101:
 
-* bit synchroniser at 19 231 chip/s, RX filter ±83 kHz, fixed LNA gain (no AGC,
-  so gain changes can't corrupt the short ~32-chip preamble)
+* bit synchronisation at 19 231 chip/s, RX filter ±81.25 kHz
 * sync word `0x55 0x56`: the last 12 preamble chips plus the `0110` start
   delimiter (a Manchester '1' after the run of '0's, whose `11` chip pair the
   preamble never contains), so it matches only at the frame start. In all 7
@@ -155,18 +182,19 @@ work. On the SX1278:
   data follows `…0101 0110`, and none decode inverted. `0x5555` is just
   preamble: it would match anywhere in the alternation
 * fixed 16-byte payload: exactly the 128 Manchester chips of one packet
-* DIO2 (SyncAddress) interrupt: latch RSSI while the packet is still on air
-* DIO0 (PayloadReady) interrupt: read FIFO, Manchester-decode, verify checksum
-  and flag bits exactly as rtl_433 does, then restart RX
+* GDO2 (sync word) interrupt: the RSSI register freezes at the sync word
+* GDO0 (end of packet) interrupt: read the payload and its appended RSSI from the
+  FIFO, Manchester-decode, verify checksum and flag bits exactly as rtl_433
+  does; the chip is already receiving again
 
-The radio task also polls the IRQ flags every 5 ms as a fallback, and samples
-RSSI between packets to estimate the noise floor.
+The radio task also polls PKTSTATUS/RXBYTES every 5 ms as a fallback, and
+samples RSSI between packets to estimate the noise floor.
 
 The LR1121 uses the same sync word, payload length and chip rate in its GFSK
 engine (no CRC, no whitening, preamble detector off, nearest filter ±78.1 kHz).
 It has a single IRQ line for SyncWordValid (RSSI latched there) and RxDone (the
-payload is read with ReadBuffer8, and its sync RSSI from GetPacketStatus). It
-uses AGC, so `radio lna` has no effect. Its lock is checked after every retune
+payload is read with ReadBuffer8, and its sync RSSI from GetPacketStatus). Its
+lock is checked after every retune
 and every 250 ms while receiving. If the chip reports `PLL_LOCK_ERR` or has
 left RX, the error is cleared and RX restarted.
 
@@ -185,7 +213,7 @@ or a TPMS trigger tool makes them transmit.
 
 Full command reference: [../docs/CLI.md](../docs/CLI.md).
 
-Console and logs use **UART0** (TTGO: GPIO1/GPIO3 to the CP2104 bridge,
+Console and logs use **UART0** (ESP32 DevKit: GPIO1/GPIO3 to the USB bridge,
 `/dev/ttyUSB0`; C3 board: GPIO21/GPIO20 to the CH340 adapter, `/dev/ttyAMA0`)
 at 115200 baud, together with the ROM and bootloader messages. The default log
 level is INFO.
@@ -193,13 +221,13 @@ level is INFO.
 | Command | Description |
 |---|---|
 | `help` | List commands |
-| `metrics` / `stats` | Uptime, heap, battery, radio chip and config, PLL lock, noise floor, sync/decode/error counters, IRQ counts, RSSI range, display state. `metrics reset` clears counters |
+| `metrics` / `stats` | Uptime, heap, radio chip and config, PLL lock, noise floor, sync/decode/error counters, IRQ counts, RSSI range, display state. `metrics reset` clears counters |
 | `sensors` | Table of the last 20 unique sensor IDs, newest first: PSI, kPa, temperature, mode, code, flags, RSSI, bursts, packets, time last seen. `sensors clear` |
-| `radio` | Show or set radio settings: `radio freq 315.0 bw 83.3 lna 1 sync 5556 bitrate 19231`, `radio defaults` |
+| `radio` | Show or set radio settings: `radio freq 315.0 bw 83.3 sync 5556 bitrate 19231`, `radio defaults` |
 | `raw on\|off` | Log every received payload (hex) with its decode result |
 | `rflog [clear]` | RF energy events and strong raw payloads (see [Troubleshooting reception](#troubleshooting-reception)); also `GET /api/rflog` |
-| `regs` | Dump SX1278 registers, or LR1121 status, errors, counters, temperature |
-| `probe` | SX1278: identify which GPIOs DIO0/1/2 and RESET use. LR1121: check RESET, BUSY, SPI and the IRQ line |
+| `regs` | CC1101 registers, state, lock and last frequency offset; LR1121 status, errors, counters, temperature |
+| `probe` | CC1101: check SO/CSn, SPI readback, GDO0 and GDO2. LR1121: check RESET, BUSY, SPI and the IRQ line |
 | `pllscan [start stop step]` | PLL lock per frequency (MHz), then resume RX; no arguments = reference points + 300–330 MHz |
 | `inject [hex] [rssi]` | Feed a packet through the pipeline. 7 bytes gets a checksum added; with no argument it uses an rtl_433 sample |
 | `tx [hex] [count n] [gap ms] [pa dBm \| rfo dBm]` | Transmit test Ford packets at the current frequency (default fake ID `feedf00d`, 4 packets, lowest high-power-PA level), then resume RX |
@@ -223,7 +251,7 @@ All screens use 1980s-dash-style slanted 7-segment digits and segmented bar grap
 
 * **Idle / scanning** (before the first packet): a sweeping scanner bar,
   scrolling RF noise graph (peak RSSI per 250 ms), live noise floor, sync
-  counter, uptime, battery voltage, and packet/bad/ID counters.
+  counter, uptime, and packet/bad/ID counters.
 * **Detail**: sensor ID, burst count, large pressure in PSI, temperature, kPa,
   a 0–60 PSI wedge bar graph, signal-strength bars, and a bottom line that
   alternates between *mode · time since received · RSSI* and *code · flags ·
@@ -392,7 +420,6 @@ The MQTT and mDNS clients come from the ESP-IDF component registry
   needing a little more clean preamble.
 * Frequency offset: sensors can be ±20 kHz off. Use `radio bw 100` or
   `radio freq 315.02` to compensate.
-* Very close/strong sensors: try `radio lna 3`.
 * `raw on` shows every payload, and the decode error tells how far it got
   (`manchester` < `checksum` < `flags`).
 
@@ -404,9 +431,9 @@ The MQTT and mDNS clients come from the ESP-IDF component registry
 | `src/board.h` | Pin maps per board (chosen by the build target) |
 | `src/radio.c` | Chip-independent receive task, decoding, stats, RSSI history, RF log, PLL scan |
 | `src/radio_hw.h` | Interface the chip backends implement |
-| `src/radio_sx127x.c` | SX1278 FSK backend, DIO probe (TTGO build) |
+| `src/radio_cc1101.c` | CC1101 2-FSK backend, lock checks, wiring probe (ESP32 build) |
 | `src/radio_lr1121.c` | LR1121 GFSK backend, lock checks, wiring probe (C3 build) |
-| `src/led.c` | Packet LED (TTGO); WS2812B status LED and button (C3) |
+| `src/led.c` | Packet LED (ESP32 DevKit); WS2812B status LED and button (C3) |
 | `src/tpms_ford.c` | Portable decoder (port of rtl_433 `tpms_ford.c`) |
 | `src/sensors.c` | 20-entry unique-ID table with burst folding |
 | `src/display.c` | SSD1306 driver, screen scheduling, dimming, pixel shift |
@@ -418,6 +445,5 @@ The MQTT and mDNS clients come from the ESP-IDF component registry
 | `src/tires.c` | Sensor ID to wheel position assignments |
 | `src/settings.c` | NVS storage for radio, display and tire settings |
 | `src/wifi_config.example.h` | Template for `src/wifi_config.h` (not in git) |
-| `src/battery.c` | Battery ADC (TTGO only) |
 | `tools/c3_upload.py` | PlatformIO pre-upload hook: `bootloader` command for the C3 board |
 | `test/host/` | Host tests with real captures from rtl_433_tests, UI preview |

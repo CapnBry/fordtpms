@@ -35,10 +35,9 @@ Shown from power-up until the first valid packet is received.
 | Top right | Receive frequency in MHz (`radio freq`) |
 | Scanner bar | 15 blocks; a lit block sweeps left and right with a fading tail. Shows that the firmware is running |
 | Graph (`RF`) | Scrolling RF level history. Each column is the **peak** RSSI over 250 ms, so the box spans the last 20 s. Scale is about −95 dBm (bottom) to −35 dBm (top), with dotted grid lines at −80, −65 and −50 dBm. A spike is a burst of 315 MHz energy from something nearby |
-| `NOISE` | Smoothed noise floor in dBm. About −83 dBm is normal for this radio at 315 MHz |
+| `NOISE` | Smoothed noise floor in dBm, as the radio reports it |
 | `SYNC` | Number of times the radio matched the sync word. This climbs slowly even without sensors, because noise sometimes matches (roughly every 5–10 s) |
 | `UP` | Uptime, `hh:mm:ss` |
-| Bottom right (top line) | Battery voltage, read every 5 s. It reads about 4.0–4.2 V on USB power because the charger is active |
 | Bottom line | `PKT` valid Ford packets decoded over the air · `BAD` packets rejected at the Manchester, checksum or flag check · `IDS` unique sensors in the table |
 | Bottom right corner | Receive lamp: alternates filled and outlined, one cycle every 1.2 s |
 

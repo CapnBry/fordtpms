@@ -2,7 +2,6 @@
 
 #include <string.h>
 
-#include "battery.h"
 #include "board.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
@@ -133,14 +132,6 @@ static void build_model(ui_model_t *m, uint32_t now)
     m->bad = rs.err_manchester + rs.err_checksum + rs.err_flags;
     m->noise_dbm = rs.noise_dbm;
     m->rssi_hist_len = radio_rssi_history(m->rssi_hist, UI_RSSI_HIST);
-
-    static int batt_mv = -1;
-    static uint32_t batt_t;
-    if (batt_mv < 0 || now - batt_t > 5000) {
-        batt_mv = battery_read_mv();
-        batt_t = now;
-    }
-    m->batt_mv = batt_mv;
 
     int n = sensors_snapshot(snap, SENSORS_MAX);
     m->nsensors = n;

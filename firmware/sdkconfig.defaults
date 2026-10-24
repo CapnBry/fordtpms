@@ -1,9 +1,9 @@
 # Shared by both boards; sdkconfig.defaults.esp32c3 adds the C3 board's settings.
 
-# 4 MB flash (ESP32-PICO-D4 on the TTGO, ESP32-C3 embedded flash)
+# 4 MB flash (ESP32-WROOM-32, ESP32-C3 embedded flash)
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 
-# Console + logs on UART0, the UART wired to the USB bridge (TTGO: GPIO1/GPIO3)
+# Console + logs on UART0, the UART wired to the USB bridge (ESP32: GPIO1/GPIO3)
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 

@@ -63,17 +63,12 @@ static int cmd_metrics(int argc, char **argv)
     if (!ns.enabled) printf("wifi          off (no SSID in wifi_config.h)\n");
     else if (!ns.connected) printf("wifi          connecting to \"%s\"\n", ns.ssid);
     else printf("wifi          %s, %d dBm, http://%s/ (%s.local)\n", ns.ip, ns.rssi_dbm, ns.ip, ns.hostname);
-    int batt = app_battery_mv();
-    if (batt >= 0) printf("battery       %d mV\n", batt);
     printf("--- radio (%s) ---\n", rs.present ? rs.chip : "NOT FOUND");
     printf("frequency     %.3f MHz\n", rc.freq_hz / 1e6);
     if (rs.pll_locked) printf("pll           locked (%u checks unlocked since reset)\n", (unsigned)rs.pll_unlocked_polls);
     else printf("pll           NOT LOCKED: receiver is not tuned and hears nothing (%u checks unlocked)\n",
                 (unsigned)rs.pll_unlocked_polls);
-    char lna[8];
-    if (radio_caps()->lna_gain) snprintf(lna, sizeof(lna), "G%u", rc.lna_gain);
-    else snprintf(lna, sizeof(lna), "AGC");
-    printf("chip rate     %u /s, rx bw %u Hz, lna %s, sync %s\n", (unsigned)rc.bitrate, (unsigned)rc.rxbw_hz, lna,
+    printf("chip rate     %u /s, rx bw %u Hz, sync %s\n", (unsigned)rc.bitrate, (unsigned)rc.rxbw_hz,
            sync_name(rc.sync));
     printf("noise floor   %d dBm\n", rs.noise_dbm);
     printf("sync matches  %u\n", (unsigned)rs.syncs);
@@ -238,8 +233,8 @@ static int cmd_radio(int argc, char **argv)
         return err == ESP_OK ? 0 : 1;
     }
     if (argc == 1) {
-        printf("freq %.3f MHz, bitrate %u, bw %u Hz, lna %u, sync %s\n", c.freq_hz / 1e6, (unsigned)c.bitrate,
-               (unsigned)c.rxbw_hz, c.lna_gain, sync_name(c.sync));
+        printf("freq %.3f MHz, bitrate %u, bw %u Hz, sync %s\n", c.freq_hz / 1e6, (unsigned)c.bitrate,
+               (unsigned)c.rxbw_hz, sync_name(c.sync));
         return 0;
     }
     for (int i = 1; i + 1 < argc; i += 2) {
@@ -247,7 +242,6 @@ static int cmd_radio(int argc, char **argv)
         if (!strcmp(k, "freq")) c.freq_hz = (uint32_t)(atof(v) * 1e6 + 0.5);
         else if (!strcmp(k, "bw")) c.rxbw_hz = (uint32_t)(atof(v) * 1e3 + 0.5);
         else if (!strcmp(k, "bitrate")) c.bitrate = (uint32_t)atoi(v);
-        else if (!strcmp(k, "lna")) c.lna_gain = (uint8_t)atoi(v);
         else if (!strcmp(k, "sync")) {
             if (!strcmp(v, "5556")) c.sync = RADIO_SYNC_5556;
             else if (!strcmp(v, "aaa9")) c.sync = RADIO_SYNC_AAA9;
@@ -268,8 +262,9 @@ static int cmd_radio(int argc, char **argv)
         return 1;
     }
     if (err != ESP_OK) {
-        printf("invalid: %s (frequency %.0f-%.0f MHz, lna 1-6, bitrate 1200-300000)\n", esp_err_to_name(err),
-               radio_caps()->freq_min_hz / 1e6, radio_caps()->freq_max_hz / 1e6);
+        const radio_caps_t *caps = radio_caps();
+        printf("invalid: %s (frequency %.0f-%.0f MHz, bitrate %u-%u)\n", esp_err_to_name(err), caps->freq_min_hz / 1e6,
+               caps->freq_max_hz / 1e6, (unsigned)caps->bitrate_min, (unsigned)caps->bitrate_max);
         return 1;
     }
     return 0;
@@ -563,13 +558,13 @@ esp_err_t cli_start(void)
          .hint = "[fl|fr|rl|rr <id|clear>]", .func = cmd_tires},
         {.command = "wifi", .help = "Wi-Fi, web UI, time and MQTT status", .func = cmd_wifi},
         {.command = "radio",
-         .help = "Show or set radio (saved): radio freq 315.0 bw 83.3 lna 1 sync 5556 bitrate 19231 | defaults",
-         .hint = "[freq MHz] [bw kHz] [lna 1-6] [sync 5556|aaa9|5555] [bitrate cps] | defaults", .func = cmd_radio},
+         .help = "Show or set radio (saved): radio freq 315.0 bw 83.3 sync 5556 bitrate 19231 | defaults",
+         .hint = "[freq MHz] [bw kHz] [sync 5556|aaa9|5555] [bitrate cps] | defaults", .func = cmd_radio},
         {.command = "rflog", .help = "RF energy events and strong raw payloads (reception diagnostics)",
          .hint = "[clear]", .func = cmd_rflog},
-        {.command = "regs", .help = "Dump radio registers (SX1278) or status, errors and counters (LR1121)",
+        {.command = "regs", .help = "Dump radio registers and status (CC1101) or status, errors and counters (LR1121)",
          .func = cmd_regs},
-        {.command = "probe", .help = "Check the radio's control lines (DIO/IRQ, RESET, BUSY)", .func = cmd_probe},
+        {.command = "probe", .help = "Check the radio's control lines (CC1101: SPI, GDO0/2; LR1121: IRQ, RESET, BUSY)", .func = cmd_probe},
         {.command = "pllscan",
          .help = "Report PLL lock per frequency, then resume RX. No args: reference points + 300-330 MHz",
          .hint = "[start_MHz stop_MHz step_MHz]", .func = cmd_pllscan},

@@ -5,19 +5,19 @@ messages and command output share the same port.
 
 ## Connecting
 
-| Setting | TTGO LoRa32 (SX1278) | ESP32-C3 + LR1121 |
+| Setting | ESP32 DevKit + CC1101 | ESP32-C3 + LR1121 |
 |---|---|---|
-| Port | `/dev/ttyUSB0` (CP2104 bridge, `/dev/serial/by-id/usb-Silicon_Labs_CP2104_…`) | `/dev/ttyAMA0` (CH340 USB-TTL adapter) |
+| Port | `/dev/ttyUSB0` (the DevKit's CP2102/CH340 bridge) | `/dev/ttyAMA0` (CH340 USB-TTL adapter) |
 | UART | ESP32 **UART0**, GPIO1 (TX) / GPIO3 (RX) | ESP32-C3 **UART0**, GPIO21 (TX) / GPIO20 (RX) |
 | Speed | 115200 8N1 | 115200 8N1 |
 | Prompt | `tpms>` | `tpms>` |
 
 ```bash
-cd firmware && pio device monitor -e ttgo-lora32-v21   # or: picocom -b 115200 /dev/ttyUSB0
+cd firmware && pio device monitor -e esp32-cc1101      # or: picocom -b 115200 /dev/ttyUSB0
 cd firmware && pio device monitor -e c3-lr1121         # or: picocom -b 115200 /dev/ttyAMA0
 ```
 
-On the TTGO, opening the port may reset the board (the CP2104's DTR/RTS
+On the ESP32 DevKit, opening the port may reset the board (the bridge's DTR/RTS
 auto-reset), so the boot log scrolls past first. Wait for `tpms>` before
 typing. The C3 board has no auto-reset circuit: opening the port never resets
 it. Use [`reboot`](#reboot) to see a boot log.
@@ -43,7 +43,7 @@ CLI changes (`raw`, `loglevel`) last until reboot.
 | [`radio`](#radio) | Show or change radio settings (saved) |
 | [`raw`](#raw) | Log every received payload |
 | [`rflog`](#rflog) | RF energy events and strong raw payloads |
-| [`regs`](#regs) | Dump SX1278 registers, or LR1121 status, errors and counters |
+| [`regs`](#regs) | Dump CC1101 registers and state, or LR1121 status, errors and counters |
 | [`probe`](#probe) | Check the radio's control lines (DIO/IRQ, RESET, BUSY) |
 | [`pllscan`](#pllscan) | Report PLL lock across frequencies |
 | [`inject`](#inject) | Feed a test packet through the pipeline |
@@ -74,7 +74,7 @@ metrics [reset]
 
 Prints a snapshot of the whole receiver. `metrics reset` zeroes the radio
 counters (the noise floor is kept). `stats` is an alias. Lines for hardware the
-board doesn't have (battery, display) are left out. TTGO example:
+board doesn't have (display) are left out. C3 board example:
 
 ```
 tpms> metrics
@@ -82,12 +82,11 @@ firmware      fordtpms 1 (IDF 6.1.0)
 uptime        0d 00:00:11
 heap free     273816 (min 270044)
 wifi          192.168.2.136, -44 dBm, http://192.168.2.136/ (fordtpms.local)
-battery       4012 mV
---- radio (SX1278 v0x12) ---
+--- radio (LR1121 hw 0x22 type 0xf3 fw 01.04) ---
 frequency     315.000 MHz
 pll           locked (0 checks unlocked since reset)
-chip rate     19231 /s, rx bw 83333 Hz, lna G1, sync 5556
-noise floor   -83 dBm
+chip rate     19231 /s, rx bw 78100 Hz, sync 5556
+noise floor   -110 dBm
 sync matches  2
 payloads      2
 decoded ok    0
@@ -97,43 +96,31 @@ err flags     0
 fifo overrun  0
 irq pay/sync  2 / 2 (polled 0)
 last rssi     -83 dBm
---- display ---
-present       yes
-screen        detail, bright, shift (0,0)
-frames        117 (26713 us/frame), i2c errors 0
 ```
 
-On the C3 board the radio section reads:
-
-```
---- radio (LR1121 hw 0x22 type 0xf3 fw 01.04) ---
-frequency     315.000 MHz
-pll           locked (0 checks unlocked since reset)
-chip rate     19231 /s, rx bw 78100 Hz, lna AGC, sync 5556
-noise floor   -122 dBm
-```
+On the CC1101 board the radio header reads `--- radio (CC1101 part 0x00 v0x14) ---`
+and `rx bw` is 81250 Hz.
 
 | Field | Meaning |
 |---|---|
 | `heap free` | Current free heap, and the lowest it has been since boot |
 | `wifi` | IP address, AP signal and web UI URL; `connecting` or `off (no SSID in wifi_config.h)` otherwise. Details: [`wifi`](#wifi) |
-| `battery` | Battery voltage after the 2:1 divider. About 4.0–4.2 V on USB power |
-| `SX1278 v0x12` | Radio version register; 0x12 means an SX1278 was found. The LR1121 shows GetVersion: hardware, use case (0x03 stock, 0xf3 ExpressLRS firmware) and firmware version. `NOT FOUND` if the chip didn't answer |
-| `pll` | `locked`, or `NOT LOCKED` when the radio can't tune the set frequency (the SX1278 has no lock from ~200 to ~355 MHz, which includes 315 MHz). Unlocked means the receiver hears nothing. The count is lock checks that failed (SX1278: every 5 ms poll; LR1121: every 250 ms) |
-| `chip rate` / `rx bw` / `lna` / `sync` | Current [`radio`](#radio) settings. `lna AGC`: the LR1121 has no fixed-gain setting |
-| `noise floor` | Smoothed RSSI between packets. About −83 dBm is normal on the SX1278 at 315 MHz. The C3 board reports RSSI at the antenna, with its external 12 dB LNA subtracted |
+| chip in the header | CC1101: PARTNUM and VERSION (0x14 on genuine parts; some clones differ, which only logs a warning). The LR1121 shows GetVersion: hardware, use case (0x03 stock, 0xf3 ExpressLRS firmware) and firmware version. `NOT FOUND` if the chip didn't answer |
+| `pll` | `locked`, or `NOT LOCKED` when the radio can't tune the set frequency. Unlocked means the receiver hears nothing. The count is lock checks that failed (every 250 ms) |
+| `chip rate` / `rx bw` / `sync` | Current [`radio`](#radio) settings. Both radios use AGC |
+| `noise floor` | Smoothed RSSI between packets, as the radio reports it. On the C3 board this includes its external LNA's gain |
 | `sync matches` | Times the radio matched the sync word `0x55 0x56`. Noise produces one roughly every 5–10 s. It climbs even with the PLL unlocked, so check `pll` too |
 | `payloads` | Payloads read from the FIFO after a sync match |
 | `decoded ok` | Valid Ford packets received **over the air**. `inject` doesn't count here |
 | `err manchest.` | Payload contained an invalid Manchester chip pair: almost always noise |
 | `err checksum` | Manchester-valid but the checksum failed: a weak or colliding real packet, or a different protocol |
 | `err flags` | Checksum ok but flag bits rtl_433 rejects, or an all-zero payload |
-| `fifo overrun` | The radio FIFO overflowed (LR1121: packet length error). Should stay 0 |
-| `irq pay/sync` | Payload / sync events signalled by interrupt (SX1278 DIO0 / DIO2, LR1121 IRQ line). `polled` counts events found by the 5 ms fallback poll instead. It should stay 0 when the interrupt lines work |
+| `fifo overrun` | The radio FIFO overflowed (CC1101: RX FIFO overflow; LR1121: packet length error). Should stay 0 |
+| `irq pay/sync` | Payload / sync events signalled by interrupt (CC1101 GDO0 / GDO2, LR1121 IRQ line). `polled` counts events found by the 5 ms fallback poll instead. It should stay 0 when the interrupt lines work |
 | `last rssi` | RSSI latched at the most recent sync match |
 | `rssi best/wst` | Best and worst RSSI of decoded packets (only shown after one has been decoded) |
 | `last packet` | Time since the last packet decoded over the air (only shown after one has been decoded) |
-| `present` | Whether the SSD1306 answered at boot (TTGO only; the section is left out on boards without a display) |
+| `present` | Whether an SSD1306 answered at boot (the section is left out on boards without a display, currently all of them) |
 | `screen` | Current screen (`idle`, `detail`, `overview`), brightness state, and burn-in shift offset |
 | `frames` | Frames drawn, time to render and send one frame, and I2C error count |
 
@@ -230,37 +217,37 @@ tpms> sensors
 ## radio
 
 ```
-radio [freq <MHz>] [bw <kHz>] [lna <1-6>] [sync 5556|aaa9|5555] [bitrate <chips/s>]
+radio [freq <MHz>] [bw <kHz>] [sync 5556|aaa9|5555] [bitrate <chips/s>]
 radio defaults
 ```
 
 Without arguments, shows the current settings. With `key value` pairs, changes
 them, reprograms the radio immediately (including image calibration for the
 new frequency) and saves them. `radio defaults` goes back to 315.000 MHz,
-83.3 kHz, LNA 1, sync 5556, 19231 chip/s. The web UI's **Radio** dialog does
-the same.
+the chip's filter nearest ±83.3 kHz, sync 5556, 19231 chip/s. The web UI's
+**Radio** dialog does the same; its limits, bandwidth list and defaults come
+from the device, so they always match the fitted chip.
 
 ```
 tpms> radio
-freq 315.000 MHz, bitrate 19231, bw 83333 Hz, lna 1, sync 5556
+freq 315.000 MHz, bitrate 19231, bw 78100 Hz, sync 5556
 tpms> radio freq 315.02 bw 100
-I (6015) radio: reconfigured: 315.020 MHz, 19231 chip/s, RxBw 100000 Hz, LNA G1
+I (6015) radio: reconfigured: 315.020 MHz, 19231 chip/s, RxBw 93600 Hz
 ```
 
 A bandwidth the chip can't do exactly is rounded to the nearest supported value:
 
 ```
-tpms> radio bw 90
-I (6013) radio: reconfigured: 315.000 MHz, 19231 chip/s, RxBw 83333 Hz, LNA G1
+tpms> radio bw 85
+I (6013) radio: reconfigured: 315.000 MHz, 19231 chip/s, RxBw 78100 Hz
 ```
 
 | Key | Default | Range / values | Notes |
 |---|---|---|---|
-| `freq` | 315.0 | SX1278 137–525 MHz, LR1121 150–960 MHz | Receive frequency. Sensor crystals can be ±20 kHz off |
-| `bw` | 83.3 | 2.6–250 kHz | Single-sided channel filter. Rounded to the nearest value the chip supports (SX1278 e.g. 50, 62.5, 83.3, 100, 125, 166.7, 200, 250; LR1121 e.g. 58.6, 78.1, 93.6, 117.2); `radio` then shows the value actually used. Ford deviation is about ±35 kHz, so don't go much below 62.5 |
-| `lna` | 1 | 1 (max gain) … 6 (min) | SX1278: fixed LNA gain; AGC is off. Use a lower gain only for very strong nearby signals. LR1121: accepted but unused (AGC, RX boosted mode) |
+| `freq` | 315.0 | CC1101 300–928 MHz (specified 300–348, 387–464, 779–928), LR1121 150–960 MHz | Receive frequency. Sensor crystals can be ±20 kHz off |
+| `bw` | 83.3 (snapped: CC1101 81.3, LR1121 78.1) | the chip's filters | Single-sided channel filter. Rounded to the nearest value the chip supports (CC1101 e.g. 50.8, 58.0, 67.7, 81.3, 101.6, 116.1; LR1121 e.g. 58.6, 78.1, 93.6, 117.2); `radio` then shows the value actually used. Ford deviation is about ±35 kHz, so don't go much below 62.5 |
 | `sync` | `5556` | `5556`, `aaa9`, `5555` | `5556`: higher FSK tone = 1, matching the rtl_433 reference captures. `aaa9`: inverted polarity. `5555`: accepts either polarity. It syncs inside the preamble, reads 24 bytes and searches for the packet in software, but needs a little more clean preamble |
-| `bitrate` | 19231 | 1200–300000 | Chip rate (52 µs per chip). Only change this for experiments |
+| `bitrate` | 19231 | CC1101 600–500000, LR1121 600–300000 | Chip rate (52 µs per chip). Only change this for experiments |
 
 Invalid values are rejected with `invalid: ESP_ERR_INVALID_ARG`.
 
@@ -320,18 +307,25 @@ deviation or bandwidth).
 
 ## regs
 
-On the SX1278, dumps registers 0x01–0x7F, 16 per line. The label at the start
-of each line is the first register's address.
+On the CC1101, dumps the configuration registers 0x00–0x2E, 16 per line (the
+label is the first register's address), then the state:
 
 ```
 tpms> regs
-01: 0d 06 7f 00 52 4e c0 00 4f 09 2b 20 00 02 0a ff
-11: a4 12 12 28 0c 12 47 32 3e 00 00 00 00 50 00 00
-...
+00: <16 config registers>
+10: ...
+20: ...
+part/version  0x00 / 0x14
+marcstate     0x0d RX
+pll           locked (FSCAL1 0x..), RX re-entered 0 times, 0 periodic recalibrations
+rssi now      ... dBm
+last packet   frequency offset +... Hz, LQI ...
+pktstatus     0x.. (GDO0 pin 0, GDO2 pin 0), rxbytes 0x00
 ```
 
-Line `01:` shows, for example, RegOpMode=0x0d (FSK, LF band, RX), bit rate
-0x067f, and Frf=0x4ec000 (315 MHz).
+`frequency offset` is FREQEST, the offset the CC1101 measured on the last
+packet: how far that sensor's crystal is off. `RX re-entered` counts lock checks
+that found the chip out of RX or uncalibrated and restarted it.
 
 The LR1121 has no register map to dump; `regs` shows its status instead:
 
@@ -342,10 +336,10 @@ stat1/stat2   0x04 / 0x09: mode rx, running from flash, reset status 0, last cmd
 irq status    0x00000000 (DIO pin 0)
 errors        0x0000 (last check 0x0000)
 pll           locked, RX re-entered 0 times
-rssi now      -115 dBm at antenna (12 dB external LNA removed)
+rssi now      -103 dBm
 gfsk stats    0 received, 0 crc err, 0 length err
 rx buffer     last length 0 at offset 0
-last packet   rssi sync -12, avg -12 dBm, len 0, status 0x00
+last packet   rssi sync 0, avg 0 dBm, len 0, status 0x00
 temperature   34.4 C
 vbat          3.31 V
 ```
@@ -356,28 +350,21 @@ out of RX and restarted it.
 
 ## probe
 
-Hardware diagnostic that finds which ESP32 GPIOs the SX1278's DIO pins and
-RESET are wired to. It briefly puts the radio in continuous mode
-(DIO0=RxReady, DIO1=bit clock, DIO2=data), counts edges on candidate GPIOs in
-standby and in RX, pulses the RESET line, then restores the normal
-configuration. Reception pauses for about 0.1 s.
+Hardware diagnostic for the radio's wiring. Reception pauses briefly and the
+chip is reset and reconfigured afterwards.
+
+On the CC1101 it resets the chip, checks that SO goes low after CSn (chip
+ready), reads PARTNUM/VERSION, writes and reads back a register, then drives
+GDO0 and GDO2 high and low (with the ESP32's pull set against each level, so
+an unconnected line reads wrong):
 
 ```
 tpms> probe
-SX1278 continuous mode, DIO0=RxReady DIO1=DCLK DIO2=DATA
-GPIO  standby(lvl,edges/20ms)  rx(lvl,edges/50ms)  guess
-   0  1      0                  1      0
- ...
-  26  0      0                  1      0            DIO0 (RxReady)
-  32  0      0                  1    449            DIO2 (DATA)?
-  33  0      0                  0   1974            DIO1 (DCLK ~19.2 kHz)
-  34  0    120                  0    286
- ...
-RESET on GPIO23: reg 0x2f wrote 0xa5, read 0xa5, after reset 0x55 -> WIRED
+SO/CSn        chip ready (SO low after CSn)
+SPI           PARTNUM 0x00 VERSION 0x14, write/read 0xa5 -> 0xa5, 0x5a -> 0x5a -> OK
+GDO0 (end of packet) GPIO17   driven high reads 1, driven low reads 0 -> WIRED
+GDO2 (sync word)     GPIO16   driven high reads 1, driven low reads 0 -> WIRED
 ```
-
-On this board DIO0 = GPIO26, DIO1 = GPIO33, DIO2 = GPIO32 and RESET = GPIO23.
-GPIO34 toggles even in standby, so it isn't driven by the radio.
 
 On the LR1121 the pins are known, so `probe` checks them instead: BUSY must be
 high in reset and go low ~230 ms after release, GetVersion must answer over
@@ -404,7 +391,7 @@ catches a failure. Without arguments it tests reference points (100, 137, 175,
 250, 433.92, 868, 915, 1000 MHz) and 300–330 MHz in 5 MHz steps. At most 400
 steps; reception pauses during the scan.
 
-SX1278: lock = the PllLock flag in FSRX mode. LR1121: lock = no `PLL_LOCK`
+CC1101: lock = a manual calibration (SCAL) leaves `FSCAL1` != 0x3F. LR1121: lock = no `PLL_LOCK`
 error after SetFs and the chip in FS mode; on a failed lock the chip falls
 back to standby. Measured on the C3 board's LR1121: lock from 40 to 2890 MHz,
 including all of 300–330 MHz.
@@ -472,7 +459,7 @@ sensor, ID `feedf00d`, 38 PSI, 29 °C, at rest.
 
 | Chip | `pa` (high-power path) | `rfo` (low-power path) | Default |
 |---|---|---|---|
-| SX1278 | PA_BOOST, 2–17 dBm | RFO, 0–15 dBm | `pa 2` |
+| CC1101 | one PA, −30 to 10 dBm: −30, −20, −15, −10, 0, 5, 7, 10 (rounded down) | same as `pa` | `pa -10` |
 | LR1121 | HP PA, −9 to 22 dBm | LP PA, −17 to 14 dBm | `pa -9` |
 
 Use the path the board's antenna is wired to. ExpressLRS LR1121 receivers,
@@ -495,10 +482,10 @@ Notes:
 * Keep the power low and the bursts short: 315 MHz is a licence-exempt band
   only for low-power, intermittent transmissions, and a nearby receiver needs
   very little.
-* If the PLL isn't locked at the current frequency (the SX1278 at 315 MHz), `tx`
+* If the PLL isn't locked at the current frequency, `tx`
   warns and sends nothing usable on that frequency.
 * The return value is `ESP_ERR_INVALID_ARG` for a power outside the path's
-  range, `ESP_ERR_TIMEOUT` if a packet never finishes, and on the LR1121
+  range, `ESP_ERR_TIMEOUT` if a packet never finishes, and
   `ESP_ERR_INVALID_STATE` if the PLL reports a lock error while transmitting.
 
 ## display
@@ -566,7 +553,6 @@ Shows free stack space (in bytes) for the firmware's main tasks.
 ```
 tpms> tasks
 radio      stack free 3316
-display    stack free 2852   (TTGO; the C3 board has "led" instead)
 web        stack free 4364
 httpd      stack free 4068
 mqtt_task  stack free 4772

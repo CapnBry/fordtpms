@@ -86,13 +86,18 @@ static void json_status(jbuf_t *j, bool with_sensors)
     int peak = nh ? hist[nh - 1] : rs.noise_dbm;
     for (int i = nh - 2; i >= 0 && i >= nh - WEB_PUSH_MS / 250; i--)
         if (hist[i] > peak) peak = hist[i];
-    jp(j, "{\"t\":\"status\",\"now\":%u,\"time\":\"%s\",\"freq\":%u,\"bw\":%u,\"lna\":%u,\"noise\":%d,\"rssi\":%d,",
-       (unsigned)now_ms(), tbuf, (unsigned)rc.freq_hz, (unsigned)rc.rxbw_hz, rc.lna_gain, rs.noise_dbm, peak);
+    jp(j, "{\"t\":\"status\",\"now\":%u,\"time\":\"%s\",\"freq\":%u,\"bw\":%u,\"noise\":%d,\"rssi\":%d,",
+       (unsigned)now_ms(), tbuf, (unsigned)rc.freq_hz, (unsigned)rc.rxbw_hz, rs.noise_dbm, peak);
     jp(j, "\"pll\":%s,\"pll_unlocked\":%u,", rs.pll_locked ? "true" : "false", (unsigned)rs.pll_unlocked_polls);
     const radio_caps_t *caps = radio_caps();
-    jp(j, "\"radio\":{\"name\":\"%s\",\"chip\":\"%s\",\"fmin\":%u,\"fmax\":%u,\"note\":\"%s\",\"lna\":%s,\"bws\":[",
+    radio_config_t def;
+    radio_default_config(&def);
+    jp(j, "\"radio\":{\"name\":\"%s\",\"chip\":\"%s\",\"fmin\":%u,\"fmax\":%u,\"note\":\"%s\","
+          "\"brmin\":%u,\"brmax\":%u,\"def\":{\"freq\":%u,\"bw\":%u,\"sync\":\"%s\",\"bitrate\":%u},\"bws\":[",
        caps->name, rs.present ? rs.chip : "not found", (unsigned)caps->freq_min_hz, (unsigned)caps->freq_max_hz,
-       caps->freq_note, caps->lna_gain ? "true" : "false");
+       caps->freq_note, (unsigned)caps->bitrate_min, (unsigned)caps->bitrate_max, (unsigned)def.freq_hz,
+       (unsigned)def.rxbw_hz, def.sync == RADIO_SYNC_AAA9 ? "aaa9" : def.sync == RADIO_SYNC_5555 ? "5555" : "5556",
+       (unsigned)def.bitrate);
     uint32_t bws[32];
     int nbw = radio_bandwidths(bws, 32);
     for (int i = 0; i < nbw; i++) jp(j, "%s%u", i ? "," : "", (unsigned)bws[i]);
@@ -119,9 +124,9 @@ static void json_status(jbuf_t *j, bool with_sensors)
         else jp(j, "%s\"%08x\"", i ? "," : "", (unsigned)id);
     }
     jp(j, "],");
-    jp(j, "\"ids\":%d,\"gen\":%u,\"batt\":%d,\"heap\":%u,\"wifi_rssi\":%d,\"ip\":\"%s\",\"host\":\"%s\","
+    jp(j, "\"ids\":%d,\"gen\":%u,\"heap\":%u,\"wifi_rssi\":%d,\"ip\":\"%s\",\"host\":\"%s\","
           "\"mqtt\":%d,\"mqtt_pub\":%u,\"clients\":%d",
-       sensors_count(), (unsigned)sensors_generation(), app_battery_mv(), (unsigned)esp_get_free_heap_size(), ns.rssi_dbm,
+       sensors_count(), (unsigned)sensors_generation(), (unsigned)esp_get_free_heap_size(), ns.rssi_dbm,
        ns.ip, ns.hostname, ms.enabled ? (ms.connected ? 1 : 0) : -1, (unsigned)ms.published, web_client_count());
     if (with_sensors) {
         jp(j, ",\"sensors\":");
@@ -209,10 +214,10 @@ static esp_err_t h_rflog(httpd_req_t *req)
     char wall[24];
     net_fmt_time(wall, sizeof(wall), net_wall_time(0));
     jp(&j, "{\"now\":%u,\"time\":\"%s\",\"noise\":%d,\"syncs\":%u,\"payloads\":%u,\"decoded\":%u,"
-           "\"freq\":%u,\"pll\":%s,\"bw\":%u,\"lna\":%u,\"sync\":\"%s\",\"event_db\":%d,\"capture_db\":%d,"
+           "\"freq\":%u,\"pll\":%s,\"bw\":%u,\"sync\":\"%s\",\"event_db\":%d,\"capture_db\":%d,"
            "\"events_total\":%u,\"events\":[",
        (unsigned)now_ms(), wall, rs.noise_dbm, (unsigned)rs.syncs, (unsigned)rs.payloads, (unsigned)rs.decoded,
-       (unsigned)rc.freq_hz, rs.pll_locked ? "true" : "false", (unsigned)rc.rxbw_hz, rc.lna_gain,
+       (unsigned)rc.freq_hz, rs.pll_locked ? "true" : "false", (unsigned)rc.rxbw_hz,
        rc.sync == RADIO_SYNC_AAA9 ? "aaa9" : rc.sync == RADIO_SYNC_5555 ? "5555" : "5556", RADIO_EVENT_DB,
        RADIO_CAPTURE_DB, (unsigned)ev_total);
     json_events(&j, ev, ne);
@@ -271,7 +276,7 @@ static esp_err_t reply(httpd_req_t *req, const char *err)
     return httpd_resp_sendstr(req, buf);
 }
 
-/* POST /api/radio: freq (MHz) bw (kHz) lna (1-6) sync (5556|aaa9|5555) bitrate | defaults=1 */
+/* POST /api/radio: freq (MHz) bw (kHz) sync (5556|aaa9|5555) bitrate | defaults=1 */
 static esp_err_t h_radio(httpd_req_t *req)
 {
     char form[256], v[24];
@@ -282,12 +287,8 @@ static esp_err_t h_radio(httpd_req_t *req)
         radio_default_config(&c);
     } else {
         if (form_get(form, "freq", v, sizeof(v))) c.freq_hz = (uint32_t)(atof(v) * 1e6 + 0.5);
-        if (form_get(form, "bw", v, sizeof(v))) {
-            double bw = atof(v);
-            if (bw < 2 || bw > 250) return reply(req, "bandwidth must be 2.6 to 250 kHz");
-            c.rxbw_hz = (uint32_t)(bw * 1e3 + 0.5);
-        }
-        if (form_get(form, "lna", v, sizeof(v))) c.lna_gain = (uint8_t)atoi(v);
+        /* The chip snaps the bandwidth to the nearest one it supports. */
+        if (form_get(form, "bw", v, sizeof(v))) c.rxbw_hz = (uint32_t)(atof(v) * 1e3 + 0.5);
         if (form_get(form, "bitrate", v, sizeof(v))) c.bitrate = (uint32_t)atoi(v);
         if (form_get(form, "sync", v, sizeof(v))) {
             if (!strcmp(v, "5556")) c.sync = RADIO_SYNC_5556;
@@ -305,8 +306,9 @@ static esp_err_t h_radio(httpd_req_t *req)
         return reply(req, msg);
     }
     if (err != ESP_OK) {
-        snprintf(msg, sizeof(msg), "rejected: frequency %u-%u MHz, LNA 1-6, bitrate 1200-300000",
-                 (unsigned)(caps->freq_min_hz / 1000000), (unsigned)(caps->freq_max_hz / 1000000));
+        snprintf(msg, sizeof(msg), "rejected: frequency %u-%u MHz, bitrate %u-%u",
+                 (unsigned)(caps->freq_min_hz / 1000000), (unsigned)(caps->freq_max_hz / 1000000),
+                 (unsigned)caps->bitrate_min, (unsigned)caps->bitrate_max);
         return reply(req, msg);
     }
     return reply(req, NULL);

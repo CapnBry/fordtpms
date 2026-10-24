@@ -1,12 +1,11 @@
 /*
- * Ford TPMS receiver: SX1278 or LR1121 @ 315 MHz FSK -> decoder -> SSD1306
- * (TTGO) or status LED (ESP32-C3) + CLI, plus Wi-Fi web UI and MQTT when
+ * Ford TPMS receiver: CC1101 or LR1121 @ 315 MHz FSK -> decoder -> status LED
+ * + CLI, plus Wi-Fi web UI and MQTT when
  * wifi_config.h has an SSID. BT is never initialised.
  */
 #include <stdio.h>
 
 #include "app.h"
-#include "battery.h"
 #include "board.h"
 #include "cli.h"
 #include "display.h"
@@ -53,11 +52,6 @@ void app_on_packet(const tpms_ford_t *p, int rssi_dbm, uint32_t ms)
                         tpms_ford_mode_str(p->mode), (unsigned)p->code, p->flags, rssi_dbm);
     sensor_entry_t e;
     if (new_burst && sensors_get(p->id, &e)) ha_mqtt_publish(&e);
-}
-
-int app_battery_mv(void)
-{
-    return battery_read_mv();
 }
 
 esp_err_t app_set_radio(const radio_config_t *cfg)
@@ -149,7 +143,6 @@ void app_main(void)
     settings_init();
     tires_init();
     sensors_init();
-    battery_init();
     /* Radio first: the display task reads radio stats from its first frame. */
     radio_config_t rc;
     if (radio_init(app_on_packet) != ESP_OK) {

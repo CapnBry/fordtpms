@@ -41,7 +41,6 @@ typedef struct {
     int16_t  noise_dbm;
     int8_t   rssi_hist[UI_RSSI_HIST];  /* dBm, oldest first */
     int      rssi_hist_len;
-    int      batt_mv;                  /* <0 if unknown */
     int      nsensors;                 /* known IDs (up to 20) */
     ui_sensor_t s[UI_MAX_WHEELS];      /* most recent first */
     int      nshown;

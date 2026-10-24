@@ -48,7 +48,6 @@ int main(int argc, char **argv)
     m.freq_hz = 315000000;
     m.syncs = 1234; m.decoded = 0; m.bad = 7;
     m.noise_dbm = -84;
-    m.batt_mv = 4123;
     m.rssi_hist_len = UI_RSSI_HIST;
     for (int i = 0; i < UI_RSSI_HIST; i++) m.rssi_hist[i] = (int8_t)(-86 + (i * 7 % 5) + (i % 23 == 0 ? 25 : 0));
 

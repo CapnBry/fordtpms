@@ -11,7 +11,6 @@
 
 /* Packet sink shared by the radio task and the CLI 'inject' command. */
 void app_on_packet(const tpms_ford_t *pkt, int rssi_dbm, uint32_t ms);
-int app_battery_mv(void);
 
 /* Settings changes from the CLI and web UI: apply, then save to NVS. */
 esp_err_t app_set_radio(const radio_config_t *cfg);

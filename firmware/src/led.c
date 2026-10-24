@@ -10,7 +10,7 @@
 
 #if defined(PIN_LED)
 
-/* ------------------------------------------------- plain LED (TTGO) ---- */
+/* ---------------------------------------------- plain LED (ESP32) ---- */
 
 static esp_timer_handle_t s_led_timer;
 

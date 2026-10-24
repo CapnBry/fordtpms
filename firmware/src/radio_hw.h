@@ -1,6 +1,6 @@
 /*
  * Chip backend interface used by radio.c. Exactly one backend is built:
- * radio_sx127x.c or radio_lr1121.c (see CMakeLists.txt). radio.c serialises
+ * radio_cc1101.c or radio_lr1121.c (see CMakeLists.txt). radio.c serialises
  * all calls; everything except hw_init and hw_start_irq runs with the radio
  * lock held.
  */
