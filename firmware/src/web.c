@@ -16,6 +16,7 @@
 #include "gfx.h"
 #include "ha_mqtt.h"
 #include "net.h"
+#include "ota.h"
 #include "radio.h"
 #include "sensors.h"
 #include "tires.h"
@@ -604,6 +605,8 @@ void web_start(void)
          .ws_post_handshake_cb = ws_connected},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) httpd_register_uri_handler(s_server, &uris[i]);
+    ota_register(s_server);
+    ota_mark_valid();  /* Wi-Fi and the web server work, so this image can take the next update */
     xTaskCreatePinnedToCore(push_task, "web", 6144, NULL, 4, NULL, 0);
     ESP_LOGI(TAG, "web UI on port 80");
 }

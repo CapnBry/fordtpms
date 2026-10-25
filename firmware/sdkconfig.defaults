@@ -16,10 +16,15 @@ CONFIG_FREERTOS_HZ=1000
 # CPU frequency scaling (configured in app_main)
 CONFIG_PM_ENABLE=y
 
-# Two 1700 KB OTA app slots: Wi-Fi + web UI + MQTT need more than 1 MB, and the
-# second slot leaves room to add OTA updates without repartitioning. NVS stays
-# at 0x9000 (24 KB), so saved settings survive the change.
+# Two 1700 KB OTA app slots: Wi-Fi + web UI + MQTT need more than 1 MB, and
+# OTA updates (ota.c) need the second slot. NVS stays at 0x9000 (24 KB), so
+# saved settings survive the change.
 CONFIG_PARTITION_TABLE_TWO_OTA_LARGE=y
+
+# A new OTA image boots on probation and the bootloader goes back to the
+# previous one unless the app confirms it (ota.c). Lives in the bootloader, so
+# it takes effect after the next USB flash.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # Web UI live updates
 CONFIG_HTTPD_WS_SUPPORT=y

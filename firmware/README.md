@@ -121,6 +121,8 @@ cd firmware
 pio run -t upload                      # default env c3-lr1121: /dev/ttyAMA0, hands-free (below)
 pio run -e esp32-cc1101 -t upload      # ESP32 DevKit + CC1101: /dev/ttyUSB0
 pio device monitor -e c3-lr1121        # 115200 baud, CLI prompt "tpms>"
+pio run -e esp32-cc1101-ota -t upload  # over Wi-Fi to fordtpms.local (below)
+pio run -e c3-lr1121-ota -t upload --upload-port <ip>:80
 ```
 
 The C3 board has no auto-reset circuit, so the upload is driven by the firmware
@@ -138,6 +140,29 @@ watchdog), each within 30 s of boot, make the next boot enter the ROM download
 mode by itself, so a broken build can still be replaced without touching the
 board. A run that lasts 30 s resets the count.
 
+### Over Wi-Fi (OTA)
+
+The `*-ota` envs build the same firmware and POST it to `/update` on the web
+server (`tools/ota_upload.py`, `src/ota.c`), about 10 s for the 1.1 MB image.
+Both boards answer to `fordtpms.local`, so with both on the network pick one
+with `--upload-port <ip>:80` (the `wifi` command shows the IP). Keep the `:80`:
+a bare IP or `.local` name makes PlatformIO switch to espota, which this
+firmware doesn't run. Without PlatformIO: `curl -F
+firmware=@.pio/build/<env>/firmware.bin http://<ip>/update`.
+
+The device checks the image before switching to it: the chip ID as soon as the
+header arrives (the other board's image is refused right away), then the
+optional `X-MD5` header and ESP-IDF's own image check (SHA-256). It replies
+with the result, then reboots.
+
+App rollback is on (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). A new image boots
+on probation and confirms itself once Wi-Fi is up and the web server has
+started. If it resets before that (crash, watchdog, power cycle), or isn't
+confirmed within 300 s, the bootloader goes back to the previous image. So an
+update that breaks Wi-Fi or the web server falls back to one that can take the
+next update. Rollback lives in the bootloader, so each board needs one USB
+flash of this firmware before it can be updated over Wi-Fi.
+
 Host-side tests (decoder against real rtl_433 captures, and UI previews):
 
 ```bash
@@ -147,8 +172,7 @@ make -C test/host screenshots  # regenerates ../docs/images/*.png (ImageMagick)
 ```
 
 Partition table: `partitions_two_ota_large.csv`, two 1700 KB app slots (the app
-is about 1.24 MB) so OTA updates can be added later without repartitioning.
-OTA itself is not implemented. NVS (settings) is at 0x9000 as before.
+is about 1.1 MB) for OTA updates. NVS (settings) is at 0x9000 as before.
 
 `sdkconfig.defaults` applies to both boards; ESP-IDF adds
 `sdkconfig.defaults.esp32c3` for the C3 build (console UART0, no USB-JTAG
@@ -334,6 +358,7 @@ command. Ages tick in the browser.
   reconnects with backoff (1 s up to 10 s). The firmware closes WebSockets that
   have been silent for 10 s, so dead browser tabs don't use up the 4 client slots.
 * `/api/state`: the same data as one JSON document, for scripts.
+* `/update`: POST a firmware image to flash it (see *Over Wi-Fi (OTA)*).
 * `/oled`: the display's current frame, drawn as a transflective LCD at a
   selectable integer scale (1x to 8x; by default the largest that fits the
   window, up to 6x). It works without a panel
@@ -464,9 +489,11 @@ The MQTT and mDNS clients come from the ESP-IDF component registry
 | `src/cli.c` | esp_console commands |
 | `src/net.c` | Wi-Fi station, hostname, mDNS, SNTP |
 | `src/web.c`, `src/web/index.html` | HTTP server, WebSocket push, the web UI page |
+| `src/ota.c` | Firmware update over Wi-Fi (`POST /update`) and rollback confirmation |
 | `src/ha_mqtt.c` | MQTT state messages and Home Assistant discovery |
 | `src/tires.c` | Sensor ID to wheel position assignments |
 | `src/settings.c` | NVS storage for radio, display and tire settings |
 | `src/wifi_config.example.h` | Template for `src/wifi_config.h` (not in git) |
 | `tools/c3_upload.py` | PlatformIO pre-upload hook: `bootloader` command for the C3 board |
+| `tools/ota_upload.py` | Uploader for the `*-ota` envs |
 | `test/host/` | Host tests with real captures from rtl_433_tests, UI preview |

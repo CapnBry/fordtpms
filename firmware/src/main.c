@@ -20,6 +20,7 @@
 #include "ha_mqtt.h"
 #include "led.h"
 #include "net.h"
+#include "ota.h"
 #include "radio.h"
 #include "sensors.h"
 #include "settings.h"
@@ -146,6 +147,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Ford TPMS receiver starting on %s", BOARD_NAME);
     led_init();
     crash_loop_check();
+    ota_boot_check();
 
     /* CPU frequency scaling: 160 MHz when busy, 80 MHz when idle. 80 MHz keeps
      * APB at full speed for the UART/SPI/I2C peripherals. No light sleep. */
