@@ -366,18 +366,19 @@ The page has no login, so anyone on the LAN can change them.
 
 ### MQTT
 
-On each new transmission (not on the repeats within a burst) from an
-**assigned** sensor, the firmware publishes a retained message in rtl_433
-style:
+Once per transmission from an **assigned** sensor, the firmware publishes a
+retained message in rtl_433 style. The repeats within a burst are folded into
+one message, sent when the burst has ended (no packet from that sensor for 3 s):
 
 ```
 zigbee/rtl_364343a4/state
 {"time":"2026-10-11 02:58:28","model":"Ford","type":"TPMS","id":"364343a4","pressure_PSI":38,
- "temperature_C":30,"moving":0,"learn":0,"code":"985606","mic":"CHECKSUM","rssi":-72}
+ "temperature_C":30,"moving":0,"rssi":-72}
 ```
 
 * `temperature_C` is left out when the sensor reports none, and `time` is left
-  out until NTP has synced. rtl_433's `unknown` fields are not sent. `rssi` (dBm,
+  out until NTP has synced. rtl_433's `learn`, `code`, `mic` and `unknown`
+  fields are not sent. `rssi` (dBm,
   best packet of the burst) is an addition.
 * `fordtpms/status` is `online` while connected, and `offline` through the MQTT
   last will.

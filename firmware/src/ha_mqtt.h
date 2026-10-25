@@ -23,8 +23,6 @@ typedef struct {
 
 /* Starts the client (called by net once Wi-Fi has an IP). */
 void ha_mqtt_start(void);
-/* Publishes one sensor's latest reading if it is assigned to a wheel. */
-void ha_mqtt_publish(const sensor_entry_t *e);
 /* Republishes discovery for all wheels (after an assignment change). */
 void ha_mqtt_tires_changed(void);
 void ha_mqtt_get_status(ha_mqtt_status_t *out);

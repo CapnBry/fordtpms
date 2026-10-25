@@ -520,7 +520,7 @@ static int cmd_screen(int argc, char **argv)
 
 static int cmd_tasks(int argc, char **argv)
 {
-    const char *names[] = {"radio", "display", "led", "web", "httpd", "mqtt_task", "IDLE", "IDLE0", "IDLE1"};
+    const char *names[] = {"radio", "display", "led", "web", "httpd", "mqtt_task", "esp_timer", "IDLE", "IDLE0", "IDLE1"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         TaskHandle_t t = xTaskGetHandle(names[i]);
         if (t) printf("%-10s stack free %u\n", names[i], (unsigned)uxTaskGetStackHighWaterMark(t));

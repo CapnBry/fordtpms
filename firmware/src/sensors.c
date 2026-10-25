@@ -48,10 +48,27 @@ bool sensors_add(const tpms_ford_t *pkt, int rssi_dbm, uint32_t ms)
     e->packets++;
     if (new_burst) {
         e->bursts++;
+        e->published = false;
         s_gen++;
     }
     xSemaphoreGive(s_lock);
     return new_burst;
+}
+
+bool sensors_take_finished(uint32_t now_ms, sensor_entry_t *out)
+{
+    bool found = false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (int i = 0; i < s_count && !found; i++) {
+        sensor_entry_t *e = &s_tab[i];
+        if (!e->published && now_ms - e->last_ms > SENSORS_BURST_GAP_MS) {
+            e->published = true;
+            *out = *e;
+            found = true;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    return found;
 }
 
 int sensors_snapshot(sensor_entry_t *out, int max)

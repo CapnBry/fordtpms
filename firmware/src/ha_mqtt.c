@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "mqtt_client.h"
@@ -15,7 +16,12 @@ static const char *TAG = "mqtt";
 
 #define AVAIL_TOPIC WIFI_HOSTNAME "/status"
 
+/* How often ended bursts are looked for: a reading goes out 3-3.25 s after
+ * the sensor's last repeat. */
+#define BURST_CHECK_MS 250
+
 static esp_mqtt_client_handle_t s_client;
+static esp_timer_handle_t s_burst_timer;
 static SemaphoreHandle_t s_lock;
 static volatile bool s_connected;
 static uint32_t s_published, s_connects;
@@ -68,20 +74,29 @@ static void publish_state(const sensor_entry_t *e)
     snprintf(topic, sizeof(topic), MQTT_BASE_TOPIC "/rtl_%08x/state", (unsigned)p->id);
     snprintf(payload, sizeof(payload),
              "{%s\"model\":\"Ford\",\"type\":\"TPMS\",\"id\":\"%08x\",\"pressure_PSI\":%g%s,"
-             "\"moving\":%d,\"learn\":%d,\"code\":\"%06x\",\"mic\":\"CHECKSUM\",\"rssi\":%d}",
+             "\"moving\":%d,\"rssi\":%d}",
              timef, (unsigned)p->id, p->psi_x4 / 4.0, tempf, p->mode == TPMS_MODE_MOVING,
-             p->mode == TPMS_MODE_LEARN, (unsigned)(p->code & 0xffffff), e->rssi_best_dbm);
+             e->rssi_best_dbm);
     publish(topic, payload, true);
     s_published++;
 }
 
-void ha_mqtt_publish(const sensor_entry_t *e)
+/*
+ * One state message per burst, sent once the burst has ended so `rssi` is the
+ * best of its repeats. A burst that ends while disconnected is not queued;
+ * the reconnect republishes the latest readings anyway.
+ */
+static void burst_check(void *arg)
 {
-    /* Only sensors the user assigned to a wheel are published. */
-    if (!s_client || !s_connected || tires_find(e->pkt.id) < 0) return;
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    publish_state(e);
-    xSemaphoreGive(s_lock);
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    sensor_entry_t e;
+    while (sensors_take_finished(now, &e)) {
+        /* Only sensors the user assigned to a wheel are published. */
+        if (!s_connected || tires_find(e.pkt.id) < 0) continue;
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        publish_state(&e);
+        xSemaphoreGive(s_lock);
+    }
 }
 
 void ha_mqtt_tires_changed(void)
@@ -142,6 +157,9 @@ void ha_mqtt_start(void)
     esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID, on_event, NULL);
     esp_mqtt_client_start(s_client);
     ESP_LOGI(TAG, "connecting to %s", s_uri);
+    esp_timer_create_args_t ta = {.callback = burst_check, .name = "mqtt_burst"};
+    esp_timer_create(&ta, &s_burst_timer);
+    esp_timer_start_periodic(s_burst_timer, BURST_CHECK_MS * 1000ULL);
 }
 
 void ha_mqtt_get_status(ha_mqtt_status_t *out)

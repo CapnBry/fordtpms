@@ -50,8 +50,7 @@ void app_on_packet(const tpms_ford_t *p, int rssi_dbm, uint32_t ms)
     ESP_LOG_LEVEL_LOCAL(lvl, TAG, "%s id=%08x pressure=%.2f PSI temp=%s mode=%s code=%06x flags=%02x rssi=%d dBm",
                         new_burst ? "packet" : "repeat", (unsigned)p->id, p->psi_x4 / 4.0, temp,
                         tpms_ford_mode_str(p->mode), (unsigned)p->code, p->flags, rssi_dbm);
-    sensor_entry_t e;
-    if (new_burst && sensors_get(p->id, &e)) ha_mqtt_publish(&e);
+    /* MQTT publishes once the burst has ended (ha_mqtt.c burst timer). */
 }
 
 esp_err_t app_set_radio(const radio_config_t *cfg)

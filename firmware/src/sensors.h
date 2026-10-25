@@ -21,6 +21,7 @@ typedef struct {
     uint32_t last_ms;       /* last packet */
     uint32_t packets;       /* all packets incl. repeats */
     uint32_t bursts;        /* distinct transmissions */
+    bool     published;     /* latest burst handed out by sensors_take_finished() */
 } sensor_entry_t;
 
 void sensors_init(void);
@@ -30,6 +31,10 @@ bool sensors_add(const tpms_ford_t *pkt, int rssi_dbm, uint32_t ms);
 int sensors_snapshot(sensor_entry_t *out, int max);
 /* Increments for every new burst; lets the UI notice fresh data cheaply. */
 uint32_t sensors_generation(void);
+/* Finds one sensor whose latest burst has ended (no packet for more than
+ * SENSORS_BURST_GAP_MS before `now_ms`) and isn't published yet, marks it
+ * published and copies it. Returns false when there is none. */
+bool sensors_take_finished(uint32_t now_ms, sensor_entry_t *out);
 /* Copies the entry for `id`. Returns false if it isn't in the table. */
 bool sensors_get(uint32_t id, sensor_entry_t *out);
 /* Number of IDs in the table. */
