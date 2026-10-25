@@ -13,6 +13,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "gfx.h"
 #include "ha_mqtt.h"
 #include "net.h"
 #include "radio.h"
@@ -22,6 +23,7 @@
 static const char *TAG = "web";
 
 #define WEB_PUSH_MS            500   /* one message per tick: at most 2 Hz per client */
+#define WEB_OLED_POLL_MS       100   /* display frame rate; frames are sent only when they changed */
 #define WEB_SENSORS_REFRESH_MS 5000
 #define WEB_CLIENT_TIMEOUT_MS  10000
 #define WEB_MAX_CLIENTS        4
@@ -29,14 +31,19 @@ static const char *TAG = "web";
 
 extern const char index_html_start[] asm("_binary_index_html_start");
 extern const char index_html_end[] asm("_binary_index_html_end");
+extern const char oled_html_start[] asm("_binary_oled_html_start");
+extern const char oled_html_end[] asm("_binary_oled_html_end");
 
 static httpd_handle_t s_server;
 static volatile bool s_send_sensors;
 
-/* WebSocket clients and the last time each one sent anything (heartbeat). */
+/* WebSocket clients and the last time each one sent anything (heartbeat).
+ * A client that sent "oled" gets display frames instead of status messages. */
 typedef struct {
     int fd;
     uint32_t last_rx_ms;
+    bool oled;
+    uint32_t oled_gen;  /* generation of the last frame sent (0 = none) */
 } ws_client_t;
 static ws_client_t s_clients[WEB_MAX_CLIENTS];
 static portMUX_TYPE s_clients_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -164,6 +171,13 @@ static esp_err_t h_index(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     /* EMBED_TXTFILES appends a NUL terminator. */
     return httpd_resp_send(req, index_html_start, index_html_end - index_html_start - 1);
+}
+
+static esp_err_t h_oled(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    return httpd_resp_send(req, oled_html_start, oled_html_end - oled_html_start - 1);
 }
 
 static esp_err_t h_state(httpd_req_t *req)
@@ -377,8 +391,20 @@ static void client_touch(int fd)
         if (!slot && s_clients[i].fd < 0) slot = &s_clients[i];
     }
     if (slot) {
-        slot->fd = fd;
+        if (slot->fd != fd) *slot = (ws_client_t){.fd = fd};
         slot->last_rx_ms = now_ms();
+    }
+    taskEXIT_CRITICAL(&s_clients_mux);
+}
+
+static void client_subscribe_oled(int fd)
+{
+    taskENTER_CRITICAL(&s_clients_mux);
+    for (int i = 0; i < WEB_MAX_CLIENTS; i++) {
+        if (s_clients[i].fd == fd) {
+            s_clients[i].oled = true;
+            s_clients[i].oled_gen = 0;
+        }
     }
     taskEXIT_CRITICAL(&s_clients_mux);
 }
@@ -419,6 +445,7 @@ static esp_err_t h_ws(httpd_req_t *req)
         return httpd_ws_send_frame(req, &pong);
     }
     if (f.type == HTTPD_WS_TYPE_TEXT && !strcmp(buf, "sensors")) s_send_sensors = true;
+    if (f.type == HTTPD_WS_TYPE_TEXT && !strcmp(buf, "oled")) client_subscribe_oled(fd);
     return ESP_OK;
 }
 
@@ -437,38 +464,74 @@ int web_client_count(void)
     return n;
 }
 
+/* Sends to client slot i; drops the client if it is gone, silent or failing. */
+static bool client_send(int i, httpd_ws_frame_t *f)
+{
+    int fd = s_clients[i].fd;
+    if (fd < 0) return false;
+    if (httpd_ws_get_fd_info(s_server, fd) != HTTPD_WS_CLIENT_WEBSOCKET) {
+        client_forget(fd);
+        return false;
+    }
+    if (now_ms() - s_clients[i].last_rx_ms > WEB_CLIENT_TIMEOUT_MS) {
+        ESP_LOGW(TAG, "websocket fd %d missed heartbeats, closing", fd);
+        client_forget(fd);
+        httpd_sess_trigger_close(s_server, fd);
+        return false;
+    }
+    if (httpd_ws_send_data(s_server, fd, f) != ESP_OK) {
+        ESP_LOGW(TAG, "websocket fd %d send failed, closing", fd);
+        client_forget(fd);
+        httpd_sess_trigger_close(s_server, fd);
+        return false;
+    }
+    return true;
+}
+
+/* Status messages go to every client except the OLED viewers. */
 static void broadcast(const char *msg, size_t len)
 {
     httpd_ws_frame_t f = {.type = HTTPD_WS_TYPE_TEXT, .payload = (uint8_t *)msg, .len = len, .final = true};
-    uint32_t now = now_ms();
+    for (int i = 0; i < WEB_MAX_CLIENTS; i++)
+        if (!s_clients[i].oled) client_send(i, &f);
+}
+
+/*
+ * OLED frame, binary: 8 byte header (width, height, flags: bit 0 panel
+ * present, bit 1 dimmed; 0; generation, u32 LE), then the framebuffer as-is
+ * (page-major: byte [y/8 * width + x], bit y%8).
+ */
+static void push_oled(void)
+{
+    static uint8_t buf[8 + GFX_FB_SIZE];
+    uint32_t gen = display_frame_gen(), have = 0;
     for (int i = 0; i < WEB_MAX_CLIENTS; i++) {
-        int fd = s_clients[i].fd;
-        if (fd < 0) continue;
-        if (httpd_ws_get_fd_info(s_server, fd) != HTTPD_WS_CLIENT_WEBSOCKET) {
-            client_forget(fd);
-            continue;
+        if (s_clients[i].fd < 0 || !s_clients[i].oled || s_clients[i].oled_gen == gen) continue;
+        if (!have) {
+            display_status_t ds;
+            display_get_status(&ds);
+            have = display_snapshot(buf + 8);
+            buf[0] = GFX_W;
+            buf[1] = GFX_H;
+            buf[2] = (ds.present ? 1 : 0) | (ds.dimmed ? 2 : 0);
+            buf[3] = 0;
+            memcpy(buf + 4, &have, 4);
         }
-        if (now - s_clients[i].last_rx_ms > WEB_CLIENT_TIMEOUT_MS) {
-            ESP_LOGW(TAG, "websocket fd %d missed heartbeats, closing", fd);
-            client_forget(fd);
-            httpd_sess_trigger_close(s_server, fd);
-            continue;
-        }
-        if (httpd_ws_send_data(s_server, fd, &f) != ESP_OK) {
-            ESP_LOGW(TAG, "websocket fd %d send failed, closing", fd);
-            client_forget(fd);
-            httpd_sess_trigger_close(s_server, fd);
-        }
+        httpd_ws_frame_t f = {.type = HTTPD_WS_TYPE_BINARY, .payload = buf, .len = sizeof(buf), .final = true};
+        if (client_send(i, &f)) s_clients[i].oled_gen = have;
     }
 }
 
 static void push_task(void *arg)
 {
     static char buf[JSON_MAX];
-    uint32_t last_gen = 0, last_sensors = 0;
+    uint32_t last_gen = 0, last_sensors = 0, last_push = 0;
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(WEB_PUSH_MS));
+        vTaskDelay(pdMS_TO_TICKS(WEB_OLED_POLL_MS));
         if (!web_client_count()) continue;
+        push_oled();
+        if (now_ms() - last_push < WEB_PUSH_MS - WEB_OLED_POLL_MS / 2) continue;
+        last_push = now_ms();
         /* One message per tick; the sensor table rides along when it changed
          * (or a page asked for it), and at least every WEB_SENSORS_REFRESH_MS. */
         uint32_t gen = sensors_generation(), now = now_ms();
@@ -502,6 +565,7 @@ void web_start(void)
     }
     static const httpd_uri_t uris[] = {
         {.uri = "/", .method = HTTP_GET, .handler = h_index},
+        {.uri = "/oled", .method = HTTP_GET, .handler = h_oled},
         {.uri = "/api/state", .method = HTTP_GET, .handler = h_state},
         {.uri = "/api/rflog", .method = HTTP_GET, .handler = h_rflog},
         {.uri = "/api/radio", .method = HTTP_POST, .handler = h_radio},

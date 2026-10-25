@@ -30,6 +30,10 @@ static const display_settings_t k_default_set = {
 static display_settings_t s_set = k_default_set;
 static display_status_t s_status;
 static volatile uint32_t s_activity_ms;
+/* Last complete frame, for readers outside the display task. */
+static uint8_t s_pub[GFX_FB_SIZE];
+static uint32_t s_pub_gen = 1;
+static portMUX_TYPE s_pub_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static esp_err_t cmd(const uint8_t *c, size_t n)
 {
@@ -200,6 +204,14 @@ static void display_task(void *arg)
             }
         }
 
+        /* Only this task writes s_pub, so the compare needs no lock. */
+        if (memcmp(s_pub, s_gfx.fb, GFX_FB_SIZE)) {
+            taskENTER_CRITICAL(&s_pub_mux);
+            memcpy(s_pub, s_gfx.fb, GFX_FB_SIZE);
+            if (++s_pub_gen == 0) s_pub_gen = 1;
+            taskEXIT_CRITICAL(&s_pub_mux);
+        }
+
         if (s_status.present) {
             bool want_dim = now - s_activity_ms > s_set.dim_after_s * 1000;
             if (want_dim != dimmed) {
@@ -223,10 +235,11 @@ static void display_task(void *arg)
 esp_err_t display_init(void)
 {
 #if !BOARD_HAS_OLED
-    /* Nothing to drive. The rendering code stays built (the host preview and
-     * `screen` share it), so keep the task referenced. */
-    (void)display_task;
-    ESP_LOGI(TAG, "no display on this board");
+    /* Nothing to drive, but the task still renders into the framebuffer for
+     * the `screen` command (s_status.present stays false: no I2C writes). */
+    ESP_LOGI(TAG, "no display on this board, UI runs headless");
+    s_activity_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    xTaskCreatePinnedToCore(display_task, "display", 4096, NULL, 5, NULL, 0);
     return ESP_ERR_NOT_SUPPORTED;
 #else
     i2c_master_bus_config_t bus = {
@@ -291,10 +304,24 @@ void display_poke(void)
     s_activity_ms = (uint32_t)(esp_timer_get_time() / 1000);
 }
 
+uint32_t display_frame_gen(void)
+{
+    return s_pub_gen;
+}
+
+uint32_t display_snapshot(uint8_t *fb)
+{
+    taskENTER_CRITICAL(&s_pub_mux);
+    memcpy(fb, s_pub, GFX_FB_SIZE);
+    uint32_t gen = s_pub_gen;
+    taskEXIT_CRITICAL(&s_pub_mux);
+    return gen;
+}
+
 void display_dump(FILE *out)
 {
     static uint8_t fb[GFX_FB_SIZE];
-    memcpy(fb, s_gfx.fb, sizeof(fb));
+    display_snapshot(fb);
     fprintf(out, "+%.*s+\n", GFX_W, "--------------------------------------------------------------------------------------------------------------------------------");
     for (int y = 0; y < GFX_H; y += 2) {
         fputc('|', out);

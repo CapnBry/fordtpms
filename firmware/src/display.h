@@ -40,5 +40,12 @@ void display_get_status(display_status_t *out);
 /* Prints the current frame as text art (2 pixel rows per line). */
 void display_dump(FILE *out);
 
+/* Generation of the last complete frame: bumped only when its pixels differ
+ * from the previous frame (never 0). */
+uint32_t display_frame_gen(void);
+/* Copies the last complete frame (GFX_FB_SIZE bytes, SSD1306 page-major
+ * layout, see gfx.h) and returns its generation. */
+uint32_t display_snapshot(uint8_t *fb);
+
 /* Wakes to full brightness (e.g. on a CLI command). */
 void display_poke(void);

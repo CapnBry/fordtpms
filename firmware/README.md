@@ -334,8 +334,17 @@ command. Ages tick in the browser.
   reconnects with backoff (1 s up to 10 s). The firmware closes WebSockets that
   have been silent for 10 s, so dead browser tabs don't use up the 4 client slots.
 * `/api/state`: the same data as one JSON document, for scripts.
+* `/oled`: the display's current frame, drawn as a transflective LCD at a
+  selectable integer scale (1x to 8x; by default the largest that fits the
+  window, up to 6x). It works without a panel
+  fitted, since the firmware always renders the screens. The page sends
+  `oled` on the WebSocket and then gets binary frames instead of
+  `status` messages: an 8 byte header (width, height, flags: bit 0 panel
+  present, bit 1 dimmed; 0; frame generation as u32 LE), then the framebuffer
+  in SSD1306 page order. A frame is sent only when its pixels changed, at most
+  at the display's 10 Hz frame rate.
 
-The page source is `src/web/index.html`, embedded into the firmware at build
+The page sources are `src/web/index.html` and `src/web/oled.html`, embedded into the firmware at build
 time. It has no external dependencies, so it works on a LAN without internet
 access.
 

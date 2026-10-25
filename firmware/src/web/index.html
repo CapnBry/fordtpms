@@ -136,6 +136,7 @@ header { display: flex; align-items: flex-end; justify-content: space-between; g
   padding: 9px 12px; border-radius: 3px; color: var(--amber); background: #120c03; border: 1px solid #3a2a0c;
   box-shadow: inset 0 1px 0 #2a1d08, 0 2px 0 #000;
 }
+a.ctl { text-decoration: none; }
 .ctl:hover { background: var(--amber); color: #2a1800; box-shadow: 0 0 14px #ffa21aaa; }
 .ctl:active { transform: translateY(1px); }
 .ctl:disabled { opacity: .3; cursor: default; pointer-events: none; }
@@ -263,6 +264,7 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
     <div class="controls">
       <button class="ctl" id="open-radio" type="button">Radio</button>
       <button class="ctl" id="open-display" type="button">Display</button>
+      <a class="ctl" href="/oled">Screen</a>
     </div>
     <div class="clock"><span>LINK</span><i class="hb" id="hb"></i> &nbsp; <span id="host">----</span><br><span id="clock">--</span></div>
   </header>

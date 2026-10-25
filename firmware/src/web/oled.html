@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FORD TPMS SCREEN</title>
+<style>
+:root {
+  --red: #ff2414;
+  --amber: #ffa21a;
+  --green: #36ff5e;
+  --dim: #5a5a60;
+  --text: #c9c9cf;
+  --s: 4px;   /* screen pixel size, set from the scale control */
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #060606; color: var(--text); }
+body {
+  font: 13px/1.3 "Eurostile", "Microgramma", "Bank Gothic", "Arial Narrow", Arial, sans-serif;
+  letter-spacing: .08em; min-height: 100vh;
+}
+.wrap { max-width: 1280px; margin: 0 auto; padding: 12px 16px 24px; }
+header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.brand { font-weight: 700; font-size: 22px; letter-spacing: .35em; color: #e8e8ec; text-transform: uppercase; }
+.brand small { display: block; font-size: 10px; letter-spacing: .4em; color: var(--red); font-weight: 400; }
+.controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ctl {
+  font: 700 10px/1 inherit; letter-spacing: .25em; text-transform: uppercase; cursor: pointer; text-decoration: none;
+  padding: 9px 12px; border-radius: 3px; color: var(--amber); background: #120c03; border: 1px solid #3a2a0c;
+  box-shadow: inset 0 1px 0 #2a1d08, 0 2px 0 #000;
+}
+.ctl:hover { background: var(--amber); color: #2a1800; box-shadow: 0 0 14px #ffa21aaa; }
+.ctl:active { transform: translateY(1px); }
+.ctl:disabled { opacity: .3; cursor: default; pointer-events: none; }
+select.ctl { padding: 8px 8px; letter-spacing: .1em; }
+select.ctl:hover { background: #120c03; color: var(--amber); }
+.lbl { font-size: 10px; letter-spacing: .3em; color: var(--dim); text-transform: uppercase; }
+.hb { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #300; margin-left: 6px; vertical-align: middle; transition: background .3s; }
+.hb.on { background: var(--green); box-shadow: 0 0 8px var(--green); transition: none; }
+
+/* The module scrolls inside its own box at large scales instead of widening the page. */
+.stage { overflow: auto; padding: 4px 0 12px; }
+.stage-inner {
+  --m: calc(var(--s) * 3 + 6px);   /* glass margin around the active area */
+  width: max-content; margin: 0 auto; display: flex; flex-direction: column; align-items: center;
+}
+
+/* ---- transflective LCD module ---- */
+.module {
+  position: relative; display: inline-block; padding: calc(var(--m) * .45) calc(var(--m) * .45) 0;
+  background: linear-gradient(180deg, #f3f3f0, #dedfda 60%, #cfd0ca);
+  border: 1px solid #b8b9b3; border-radius: 3px;
+  box-shadow: 0 1px 0 #fff inset, 0 10px 30px #000c;
+}
+.bezel {   /* the thin dark edge of the glass stack */
+  padding: 2px; background: #5e6573; border-radius: 2px;
+  box-shadow: 0 0 0 1px #8a909b, inset 0 0 2px #000;
+}
+.glass {
+  position: relative; padding: var(--m);
+  background: linear-gradient(170deg, #b7bc9c, #adb393 55%, #a5ab8b);
+}
+.active {
+  position: relative; padding: calc(var(--s) * .75 + 1px);
+  background: #9fa585;
+  box-shadow: 0 0 calc(var(--s) * 2) calc(var(--s) * .5) #959b7c inset;
+}
+.active canvas { display: block; }
+.glass::after {   /* faint reflection on the front polarizer */
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(115deg, #ffffff1c 0%, #ffffff08 35%, transparent 36%, transparent 70%, #ffffff0a 100%);
+}
+.tail {   /* backlight / driver strip below the glass */
+  position: relative; height: calc(var(--m) * 1.4 + 6px); margin: 0 calc(var(--m) * -.45);
+  background: linear-gradient(180deg, #2a2a2a, #050505 30%, #0d0d0d);
+  border-top: 1px solid #777;
+}
+.tail::before {   /* the grey slot in the middle of the strip */
+  content: ""; position: absolute; left: 38%; right: 38%; top: 34%; height: 18%; min-height: 2px;
+  background: linear-gradient(180deg, #8a8a8a, #3a3a3a); border-radius: 2px;
+}
+.fpc {
+  height: calc(var(--m) * 2.2 + 8px); width: calc(var(--s) * 64 + 40px); margin-top: -1px;
+  clip-path: polygon(0 0, 100% 0, 97% 70%, 92% 100%, 8% 100%, 3% 70%);
+  background:
+    repeating-linear-gradient(90deg, transparent 0 calc(var(--s) * 1.5 + 3px), #b8860b66 calc(var(--s) * 1.5 + 3px) calc(var(--s) * 1.5 + 4px)),
+    linear-gradient(180deg, #a87c12, #e3ad2a 30%, #f0c040 70%, #e7b52c);
+}
+
+.readout {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 22px; margin-top: 16px;
+  font-family: ui-monospace, "Consolas", "DejaVu Sans Mono", monospace; font-size: 12px; letter-spacing: .04em;
+}
+.readout b { color: var(--amber); font-weight: 400; }
+.readout .warn { color: var(--red); }
+.note { margin: 14px auto 0; max-width: 720px; text-align: center; color: var(--dim); font-size: 11px; letter-spacing: .05em; }
+.lost {
+  position: fixed; left: 50%; top: 18px; transform: translateX(-50%); z-index: 10; display: none;
+  background: #000; color: var(--red); border: 2px solid var(--red); padding: 10px 22px; border-radius: 4px;
+  font-weight: 700; letter-spacing: .4em; box-shadow: 0 0 30px #ff241488; animation: blink 1s steps(2) infinite;
+}
+.lost.show { display: block; }
+@keyframes blink { 50% { opacity: .35; } }
+.stale { opacity: .45; filter: grayscale(.6); transition: opacity .5s; }
+@media (max-width: 520px) {
+  .wrap { padding: 10px 10px 20px; }
+  .brand { font-size: 16px; }
+}
+</style>
+</head>
+<body>
+<div class="lost" id="lost">SIGNAL LOST &middot; RECONNECTING</div>
+<div class="wrap">
+  <header>
+    <div class="brand">FORD TPMS<small>Display Monitor</small></div>
+    <div class="controls">
+      <span class="lbl">Scale</span>
+      <button class="ctl" id="zoom-out" type="button" title="Smaller (-)">&minus;</button>
+      <select class="ctl" id="scale" aria-label="Scale"></select>
+      <button class="ctl" id="zoom-in" type="button" title="Larger (+)">+</button>
+      <a class="ctl" href="/">Dashboard</a>
+    </div>
+    <div class="lbl">LINK<i class="hb" id="hb"></i></div>
+  </header>
+
+  <div class="stage" id="stage">
+    <div class="stage-inner">
+      <div class="module">
+        <div class="bezel"><div class="glass"><div class="active"><canvas id="lcd"></canvas></div></div></div>
+        <div class="tail"></div>
+      </div>
+      <div class="fpc"></div>
+    </div>
+  </div>
+
+  <div class="readout">
+    <span>PANEL <b id="r-size">---</b></span>
+    <span>VIEW <b id="r-view">---</b></span>
+    <span>OLED <b id="r-panel">---</b></span>
+    <span>FRAMES <b id="r-frames">0</b></span>
+    <span>LAST CHANGE <b id="r-age">---</b></span>
+  </div>
+  <div class="note">The firmware renders every frame and sends one only when its pixels changed (up to 10 per second).</div>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const cv = $("lcd"), ctx = cv.getContext("2d");
+
+/* ------------------------------------------------------------ frame */
+let W = 128, H = 64, fb = null, flags = 0, frames = 0, changedAt = 0;
+let scale = 4;
+
+function lit(x, y) { return (fb[(y >> 3) * W + x] >> (y & 7)) & 1; }
+
+/* Cell geometry and the unlit dot matrix, rebuilt only when the size changes. */
+let geo = null;
+function geometry() {
+  const dpr = window.devicePixelRatio || 1, cell = scale * dpr;
+  const key = `${W}x${H}@${cell}`;
+  if (geo && geo.key === key) return geo;
+  /* cell edges in device pixels, so every pixel is the same whole size */
+  const g = { key, cell, gap: scale >= 3 ? Math.max(1, Math.round(cell * 0.07)) : 0, xs: [], ys: [], grid: null };
+  for (let x = 0; x <= W; x++) g.xs.push(Math.round(x * cell));
+  for (let y = 0; y <= H; y++) g.ys.push(Math.round(y * cell));
+  g.cw = g.xs[W]; g.ch = g.ys[H];
+  if (scale >= 3) {   /* unlit dot matrix, just visible as on a real panel */
+    g.grid = document.createElement("canvas");
+    g.grid.width = g.cw; g.grid.height = g.ch;
+    const gc = g.grid.getContext("2d");
+    gc.fillStyle = "rgba(60,70,30,0.07)";
+    for (let y = 0; y < H; y++)
+      for (let x = 0; x < W; x++) gc.fillRect(g.xs[x], g.ys[y], g.xs[x + 1] - g.xs[x] - g.gap, g.ys[y + 1] - g.ys[y] - g.gap);
+  }
+  return geo = g;
+}
+
+function draw() {
+  const { cell, gap, xs, ys, cw, ch, grid } = geometry();
+  if (cv.width !== cw || cv.height !== ch) { cv.width = cw; cv.height = ch; }
+  cv.style.width = W * scale + "px"; cv.style.height = H * scale + "px";
+  ctx.clearRect(0, 0, cw, ch);
+  if (grid) ctx.drawImage(grid, 0, 0);
+  if (!fb) return;
+  const rect = (x, y, dx) => ctx.fillRect(xs[x] + dx, ys[y] + dx, xs[x + 1] - xs[x] - gap, ys[y + 1] - ys[y] - gap);
+  /* transflective shadow: the liquid crystal casts onto the reflector behind it */
+  const off = Math.max(1, Math.round(cell * 0.2));
+  ctx.fillStyle = "rgba(40,48,24,0.20)";
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (lit(x, y)) rect(x, y, off);
+  ctx.fillStyle = "rgba(18,22,14,0.90)";
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (lit(x, y)) rect(x, y, 0);
+}
+
+function onFrame(buf) {
+  const u8 = new Uint8Array(buf);
+  if (u8.length < 8) return;
+  const w = u8[0], h = u8[1];
+  if (u8.length < 8 + w * h / 8) return;
+  W = w; H = h; flags = u8[2];
+  fb = u8.subarray(8, 8 + w * h / 8);
+  frames++; changedAt = performance.now();
+  draw();
+  readout();
+}
+
+/* ------------------------------------------------------------ scale */
+function setScale(s) {
+  scale = Math.max(1, Math.min(8, s | 0));
+  $("scale").value = scale;
+  document.documentElement.style.setProperty("--s", scale + "px");
+  $("zoom-out").disabled = scale <= 1;
+  $("zoom-in").disabled = scale >= 8;
+  draw();
+  readout();
+}
+for (let s = 1; s <= 8; s++) {
+  const o = document.createElement("option");
+  o.value = s; o.textContent = s + "×";
+  $("scale").appendChild(o);
+}
+$("scale").addEventListener("change", e => setScale(+e.target.value));
+$("zoom-out").addEventListener("click", () => setScale(scale - 1));
+$("zoom-in").addEventListener("click", () => setScale(scale + 1));
+document.addEventListener("keydown", e => {
+  if (e.target.matches("select")) return;
+  if (e.key === "+" || e.key === "=") setScale(scale + 1);
+  else if (e.key === "-") setScale(scale - 1);
+});
+/* moving the window to a screen with another pixel ratio */
+window.addEventListener("resize", draw);
+
+/* ------------------------------------------------------------ readout */
+function readout() {
+  $("r-size").textContent = `${W}×${H}`;
+  $("r-view").textContent = `${scale}× = ${W * scale}×${H * scale} px`;
+  if (!fb) return;
+  const p = $("r-panel");
+  p.textContent = flags & 1 ? (flags & 2 ? "PRESENT, DIMMED" : "PRESENT") : "NOT FITTED (HEADLESS)";
+  p.classList.toggle("warn", !(flags & 1));
+  $("r-frames").textContent = frames;
+}
+setInterval(() => {
+  if (!changedAt) return;
+  const s = (performance.now() - changedAt) / 1000;
+  $("r-age").textContent = s < 1 ? "NOW" : s < 60 ? `${Math.floor(s)} S AGO` : `${Math.floor(s / 60)} MIN AGO`;
+}, 250);
+
+/* ------------------------------------------------- websocket + heartbeat */
+/* Same link watchdog as the dashboard: ping every 2 s, a socket quiet for
+ * 6 s is half-open and gets replaced, reconnects back off 1 s .. 10 s. */
+let ws = null, lastRx = 0, connectAt = 0, retryMs = 1000, retryTimer = null;
+const HEARTBEAT_MS = 2000, DEAD_MS = 6000, CONNECT_MS = 20000;
+function setLink(ok) {
+  $("lost").classList.toggle("show", !ok);
+  $("stage").classList.toggle("stale", !ok);
+}
+function drop(sock) {
+  sock.onopen = sock.onmessage = sock.onclose = sock.onerror = null;
+  try { sock.close(); } catch (e) {}
+}
+function connect() {
+  clearTimeout(retryTimer);
+  retryTimer = null;
+  if (ws) drop(ws);
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
+  let sock;
+  try { sock = new WebSocket(url); } catch (e) { ws = null; scheduleReconnect(); return; }
+  sock.binaryType = "arraybuffer";
+  ws = sock;
+  connectAt = performance.now();
+  sock.onopen = () => { lastRx = performance.now(); retryMs = 1000; setLink(true); sock.send("oled"); };
+  sock.onmessage = ev => {
+    lastRx = performance.now();
+    if (ev.data instanceof ArrayBuffer) { onFrame(ev.data); return; }
+    if (ev.data.indexOf('"pong"') >= 0) { const hb = $("hb"); hb.classList.add("on"); setTimeout(() => hb.classList.remove("on"), 150); }
+  };
+  sock.onclose = () => { if (ws !== sock) return; ws = null; setLink(false); scheduleReconnect(); };
+  sock.onerror = () => {};
+}
+function scheduleReconnect() {
+  if (retryTimer) return;
+  retryTimer = setTimeout(connect, retryMs);
+  retryMs = Math.min(retryMs * 2, 10000);
+}
+setInterval(() => {
+  if (!ws) return;
+  const now = performance.now();
+  if (ws.readyState === WebSocket.OPEN) {
+    if (now - lastRx > DEAD_MS) { drop(ws); ws = null; setLink(false); scheduleReconnect(); return; }
+    ws.send("ping");
+  } else if (ws.readyState === WebSocket.CONNECTING && now - connectAt > CONNECT_MS) {
+    drop(ws); ws = null;
+    scheduleReconnect();
+  }
+}, HEARTBEAT_MS);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && !ws) { retryMs = 1000; connect(); }
+});
+
+/* default: the largest scale that fits the window, up to 6x. The module frame
+ * adds about 9 screen pixels + 20 px; the page gutters 32 px. */
+setScale(Math.max(1, Math.min(6, Math.floor((window.innerWidth - 60) / (W + 9)))));
+setLink(false);
+connect();
+</script>
+</body>
+</html>
