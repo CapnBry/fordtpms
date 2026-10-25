@@ -14,11 +14,15 @@
  */
 #pragma once
 
+#include <stdbool.h>
+
 #include "esp_http_server.h"
 
 /* Call early in app_main: starts the probation timer if this boot is unverified. */
 void ota_boot_check(void);
 /* The running image works well enough to take the next update. */
 void ota_mark_valid(void);
+/* A new image that hasn't been confirmed yet (reported in /api/state). */
+bool ota_on_probation(void);
 /* Registers POST /update. */
 void ota_register(httpd_handle_t server);

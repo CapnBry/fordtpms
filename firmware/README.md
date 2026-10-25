@@ -357,7 +357,10 @@ command. Ages tick in the browser.
   If the page gets nothing for 6 s, it shows *SIGNAL LOST*, drops the socket and
   reconnects with backoff (1 s up to 10 s). The firmware closes WebSockets that
   have been silent for 10 s, so dead browser tabs don't use up the 4 client slots.
-* `/api/state`: the same data as one JSON document, for scripts.
+* `/api/state`: the same data as one JSON document, for scripts. `status.fw`
+  identifies the running build: `elf` is the first 8 hex digits of the ELF's
+  SHA-256 (`sha256sum .pio/build/<env>/firmware.elf`), `probation` is true
+  while a new OTA image is unconfirmed.
 * `/update`: POST a firmware image to flash it (see *Over Wi-Fi (OTA)*).
 * `/oled`: the display's current frame, drawn as a transflective LCD at a
   selectable integer scale (1x to 8x; by default the largest that fits the

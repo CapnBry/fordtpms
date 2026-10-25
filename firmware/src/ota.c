@@ -58,6 +58,11 @@ void ota_mark_valid(void)
     ESP_LOGI(TAG, "new firmware confirmed");
 }
 
+bool ota_on_probation(void)
+{
+    return s_pending_verify;
+}
+
 /* -------------------------------------------------------------- update --- */
 
 static void reboot(void *arg)

@@ -7,8 +7,10 @@
 #include <unistd.h>
 
 #include "app.h"
+#include "esp_app_desc.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -137,6 +139,15 @@ static void json_status(jbuf_t *j, bool with_sensors)
           "\"mqtt\":%d,\"mqtt_pub\":%u,\"clients\":%d",
        sensors_count(), (unsigned)sensors_generation(), (unsigned)esp_get_free_heap_size(), ns.rssi_dbm,
        ns.ip, ns.hostname, ms.enabled ? (ms.connected ? 1 : 0) : -1, (unsigned)ms.published, web_client_count());
+    /* Which build is running: elf is the first 8 hex digits of the ELF's SHA-256 (matches
+     * sha256sum .pio/build/<env>/firmware.elf). ver is from git describe when CMake last
+     * configured, so it can lag. probation: a new OTA image that isn't confirmed yet. */
+    const esp_app_desc_t *app = esp_app_get_description();
+    char elf[9];
+    esp_app_get_elf_sha256(elf, sizeof(elf));
+    jp(j, ",\"fw\":{\"ver\":\"%s\",\"elf\":\"%s\",\"part\":\"%s\",\"probation\":%s}",
+       app->version, elf, esp_ota_get_running_partition()->label,
+       ota_on_probation() ? "true" : "false");
     if (with_sensors) {
         jp(j, ",\"sensors\":");
         json_sensors(j);
