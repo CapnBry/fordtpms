@@ -6,10 +6,7 @@
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
-# Smaller image: optimize for size, assert() without file/condition text, and
-# no debug-level log strings (the CLI 'log' command tops out at info).
-CONFIG_COMPILER_OPTIMIZATION_SIZE=y
-CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+# No debug-level log strings (the CLI 'log' command tops out at info).
 CONFIG_LOG_MAXIMUM_LEVEL_INFO=y
 
 # Features this firmware doesn't use: WPA2-Enterprise, MQTT over TLS or

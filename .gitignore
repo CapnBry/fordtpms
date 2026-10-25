@@ -1,9 +1,6 @@
 # PlatformIO build output and IDE integration
 .pio/
-.pioenvs/
-.piolibdeps/
 .vscode/
-.clang_complete
 .gcc-flags.json
 compile_commands.json
 
@@ -31,11 +28,6 @@ backup/
 # Python bytecode
 __pycache__/
 *.py[cod]
-
-# Editors / OS
-*.swp
-*~
-.DS_Store
 
 # Local Wi-Fi / MQTT credentials (template: firmware/src/wifi_config.example.h)
 firmware/src/wifi_config.h
