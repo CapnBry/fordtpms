@@ -3,6 +3,7 @@
  * + CLI, plus Wi-Fi web UI and MQTT when
  * wifi_config.h has an SSID. BT is never initialised.
  */
+#include <stddef.h>
 #include <stdio.h>
 
 #include "app.h"
@@ -39,18 +40,30 @@ static const char *TAG = "tpms";
 static RTC_NOINIT_ATTR uint32_t s_crash_magic, s_crash_count;
 static esp_timer_handle_t s_stable_timer;
 
-void app_on_packet(const tpms_ford_t *p, int rssi_dbm, uint32_t ms)
+void app_on_packet(const tpms_ford_t *p, const radio_rx_info_t *rx, uint32_t ms)
 {
-    bool new_burst = sensors_add(p, rssi_dbm, ms);
+    int rssi_dbm = rx->rssi_dbm;
+    bool new_burst = sensors_add(p, rx, ms);
     led_packet();
     char temp[8];
     if (p->temp_valid) snprintf(temp, sizeof(temp), "%dC", p->temp_c);
     else snprintf(temp, sizeof(temp), "n/a");
     esp_log_level_t lvl = new_burst ? ESP_LOG_INFO : ESP_LOG_DEBUG;
-    ESP_LOG_LEVEL_LOCAL(lvl, TAG, "%s id=%08x pressure=%.2f PSI temp=%s mode=%s code=%06x flags=%02x rssi=%d dBm",
+    char q[32] = "";
+    if (rx->quality) snprintf(q, sizeof(q), " foff=%+.1f kHz lqi=%u", rx->freq_off_hz / 1e3, rx->lqi);
+    ESP_LOG_LEVEL_LOCAL(lvl, TAG, "%s id=%08x pressure=%.2f PSI temp=%s mode=%s code=%06x flags=%02x rssi=%d dBm%s",
                         new_burst ? "packet" : "repeat", (unsigned)p->id, p->psi_x4 / 4.0, temp,
-                        tpms_ford_mode_str(p->mode), (unsigned)p->code, p->flags, rssi_dbm);
+                        tpms_ford_mode_str(p->mode), (unsigned)p->code, p->flags, rssi_dbm, q);
     /* MQTT publishes once the burst has ended (ha_mqtt.c burst timer). */
+}
+
+/* Saved radio settings. Blobs from before drate_comp are its prefix: loaded
+ * with the new fields at their defaults, so a reflash keeps the tuning. */
+static bool radio_load_settings(radio_config_t *rc)
+{
+    if (settings_load("radio", rc, sizeof(*rc))) return true;
+    radio_default_config(rc);
+    return settings_load("radio", rc, offsetof(radio_config_t, drate_comp));
 }
 
 esp_err_t app_set_radio(const radio_config_t *cfg)
@@ -146,7 +159,7 @@ void app_main(void)
     radio_config_t rc;
     if (radio_init(app_on_packet) != ESP_OK) {
         ESP_LOGE(TAG, "radio init failed; CLI still available");
-    } else if (settings_load("radio", &rc, sizeof(rc)) && radio_set_config(&rc) != ESP_OK) {
+    } else if (radio_load_settings(&rc) && radio_set_config(&rc) != ESP_OK) {
         ESP_LOGW(TAG, "saved radio settings rejected, using defaults");
         radio_default_config(&rc);
         radio_set_config(&rc);

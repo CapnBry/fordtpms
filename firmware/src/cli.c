@@ -68,8 +68,8 @@ static int cmd_metrics(int argc, char **argv)
     if (rs.pll_locked) printf("pll           locked (%u checks unlocked since reset)\n", (unsigned)rs.pll_unlocked_polls);
     else printf("pll           NOT LOCKED: receiver is not tuned and hears nothing (%u checks unlocked)\n",
                 (unsigned)rs.pll_unlocked_polls);
-    printf("chip rate     %u /s, rx bw %u Hz, sync %s\n", (unsigned)rc.bitrate, (unsigned)rc.rxbw_hz,
-           sync_name(rc.sync));
+    printf("chip rate     %u /s (drate comp %s), rx bw %u Hz, sync %s\n", (unsigned)rc.bitrate,
+           radio_drate_comp_str(rc.drate_comp), (unsigned)rc.rxbw_hz, sync_name(rc.sync));
     printf("noise floor   %d dBm\n", rs.noise_dbm);
     printf("sync matches  %u\n", (unsigned)rs.syncs);
     printf("payloads      %u\n", (unsigned)rs.payloads);
@@ -140,6 +140,16 @@ static int cmd_sensors(int argc, char **argv)
     }
     if (!n) printf("(no sensors received yet)\n");
     printf("%d of max %d unique IDs; Last = uptime of last packet\n", n, SENSORS_MAX);
+    bool hdr = false;
+    for (int i = 0; i < n; i++) {
+        const sensor_entry_t *e = &snap[i];
+        if (!e->q_n) continue;
+        if (!hdr) printf("\nreceive quality (freq offset in kHz; LQI lower = better):\n");
+        hdr = true;
+        printf("%08x  last burst %u/4 pkts  foff %+.1f mean %+.1f (%+.1f..%+.1f)  lqi %u mean %.1f  n=%u\n",
+               (unsigned)e->pkt.id, e->burst_pkts, e->foff_hz / 1e3, e->foff_sum_hz / (double)e->q_n / 1e3,
+               e->foff_min_hz / 1e3, e->foff_max_hz / 1e3, e->lqi, (double)e->lqi_sum / e->q_n, (unsigned)e->q_n);
+    }
     return 0;
 }
 
@@ -233,8 +243,8 @@ static int cmd_radio(int argc, char **argv)
         return err == ESP_OK ? 0 : 1;
     }
     if (argc == 1) {
-        printf("freq %.3f MHz, bitrate %u, bw %u Hz, sync %s\n", c.freq_hz / 1e6, (unsigned)c.bitrate,
-               (unsigned)c.rxbw_hz, sync_name(c.sync));
+        printf("freq %.3f MHz, bitrate %u, drc %u (%s), bw %u Hz, sync %s\n", c.freq_hz / 1e6, (unsigned)c.bitrate,
+               c.drate_comp, radio_drate_comp_str(c.drate_comp), (unsigned)c.rxbw_hz, sync_name(c.sync));
         return 0;
     }
     for (int i = 1; i + 1 < argc; i += 2) {
@@ -242,6 +252,7 @@ static int cmd_radio(int argc, char **argv)
         if (!strcmp(k, "freq")) c.freq_hz = (uint32_t)(atof(v) * 1e6 + 0.5);
         else if (!strcmp(k, "bw")) c.rxbw_hz = (uint32_t)(atof(v) * 1e3 + 0.5);
         else if (!strcmp(k, "bitrate")) c.bitrate = (uint32_t)atoi(v);
+        else if (!strcmp(k, "drc")) c.drate_comp = (uint8_t)atoi(v);  /* > 3 is rejected */
         else if (!strcmp(k, "sync")) {
             if (!strcmp(v, "5556")) c.sync = RADIO_SYNC_5556;
             else if (!strcmp(v, "aaa9")) c.sync = RADIO_SYNC_AAA9;
@@ -263,8 +274,9 @@ static int cmd_radio(int argc, char **argv)
     }
     if (err != ESP_OK) {
         const radio_caps_t *caps = radio_caps();
-        printf("invalid: %s (frequency %.0f-%.0f MHz, bitrate %u-%u)\n", esp_err_to_name(err), caps->freq_min_hz / 1e6,
-               caps->freq_max_hz / 1e6, (unsigned)caps->bitrate_min, (unsigned)caps->bitrate_max);
+        printf("invalid: %s (frequency %.0f-%.0f MHz, bitrate %u-%u, drc 0-3)\n", esp_err_to_name(err),
+               caps->freq_min_hz / 1e6, caps->freq_max_hz / 1e6, (unsigned)caps->bitrate_min,
+               (unsigned)caps->bitrate_max);
         return 1;
     }
     return 0;
@@ -362,8 +374,10 @@ static int cmd_rflog(int argc, char **argv)
         char hex[2 * RADIO_CAPTURE_MAX + 1];
         for (int k = 0; k < cap[i].len; k++) sprintf(hex + 2 * k, "%02x", cap[i].data[k]);
         fmt_when(when, sizeof(when), cap[i].ms);
-        printf("%-19s %4d dBm (noise %d) %-10s %s\n", when, cap[i].rssi_dbm, cap[i].noise_dbm,
-               tpms_ford_status_str((tpms_ford_status_t)cap[i].status), hex);
+        char q[32] = "";
+        if (cap[i].quality) snprintf(q, sizeof(q), " foff %+.1f kHz lqi %u", cap[i].freq_off_hz / 1e3, cap[i].lqi);
+        printf("%-19s %4d dBm (noise %d) %-10s %s%s\n", when, cap[i].rssi_dbm, cap[i].noise_dbm,
+               tpms_ford_status_str((tpms_ford_status_t)cap[i].status), hex, q);
     }
     printf("(also at http://<ip>/api/rflog)\n");
     return 0;
@@ -402,7 +416,8 @@ static int cmd_inject(int argc, char **argv)
         printf("rejected: %s\n", tpms_ford_status_str(st));
         return 1;
     }
-    app_on_packet(&pkt, rssi, (uint32_t)(esp_timer_get_time() / 1000));
+    radio_rx_info_t rx = {.rssi_dbm = rssi};  /* no quality data: injected packets stay out of the offset stats */
+    app_on_packet(&pkt, &rx, (uint32_t)(esp_timer_get_time() / 1000));
     return 0;
 }
 
@@ -558,8 +573,9 @@ esp_err_t cli_start(void)
          .hint = "[fl|fr|rl|rr <id|clear>]", .func = cmd_tires},
         {.command = "wifi", .help = "Wi-Fi, web UI, time and MQTT status", .func = cmd_wifi},
         {.command = "radio",
-         .help = "Show or set radio (saved): radio freq 315.0 bw 83.3 sync 5556 bitrate 19231 | defaults",
-         .hint = "[freq MHz] [bw kHz] [sync 5556|aaa9|5555] [bitrate cps] | defaults", .func = cmd_radio},
+         .help = "Show or set radio (saved): radio freq 315.0 bw 83.3 sync 5556 bitrate 19231 drc 1 | defaults\n"
+                 "  drc: data rate offset compensation 0 off, 1 +/-3.125%, 2 +/-6.25%, 3 +/-12.5% (CC1101)",
+         .hint = "[freq MHz] [bw kHz] [sync 5556|aaa9|5555] [bitrate cps] [drc 0-3] | defaults", .func = cmd_radio},
         {.command = "rflog", .help = "RF energy events and strong raw payloads (reception diagnostics)",
          .hint = "[clear]", .func = cmd_rflog},
         {.command = "regs", .help = "Dump radio registers and status (CC1101) or status, errors and counters (LR1121)",

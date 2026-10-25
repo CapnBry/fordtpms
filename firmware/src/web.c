@@ -100,11 +100,11 @@ static void json_status(jbuf_t *j, bool with_sensors)
     radio_config_t def;
     radio_default_config(&def);
     jp(j, "\"radio\":{\"name\":\"%s\",\"chip\":\"%s\",\"fmin\":%u,\"fmax\":%u,\"note\":\"%s\","
-          "\"brmin\":%u,\"brmax\":%u,\"def\":{\"freq\":%u,\"bw\":%u,\"sync\":\"%s\",\"bitrate\":%u},\"bws\":[",
+          "\"brmin\":%u,\"brmax\":%u,\"def\":{\"freq\":%u,\"bw\":%u,\"sync\":\"%s\",\"bitrate\":%u,\"drc\":%u},\"bws\":[",
        caps->name, rs.present ? rs.chip : "not found", (unsigned)caps->freq_min_hz, (unsigned)caps->freq_max_hz,
        caps->freq_note, (unsigned)caps->bitrate_min, (unsigned)caps->bitrate_max, (unsigned)def.freq_hz,
        (unsigned)def.rxbw_hz, def.sync == RADIO_SYNC_AAA9 ? "aaa9" : def.sync == RADIO_SYNC_5555 ? "5555" : "5556",
-       (unsigned)def.bitrate);
+       (unsigned)def.bitrate, def.drate_comp);
     uint32_t bws[32];
     int nbw = radio_bandwidths(bws, 32);
     for (int i = 0; i < nbw; i++) jp(j, "%s%u", i ? "," : "", (unsigned)bws[i]);
@@ -112,18 +112,19 @@ static void json_status(jbuf_t *j, bool with_sensors)
     jp(j, "\"hist\":[");
     for (int i = 0; i < nh; i++) jp(j, "%s%d", i ? "," : "", hist[i]);
     jp(j, "],\"syncs\":%u,\"payloads\":%u,\"decoded\":%u,\"err_manchester\":%u,\"err_checksum\":%u,"
-          "\"err_flags\":%u,\"overruns\":%u,\"last_rssi\":%d,\"best_rssi\":%d,\"worst_rssi\":%d,\"last_decode\":%u,",
+          "\"err_flags\":%u,\"near_miss\":%u,\"overruns\":%u,\"last_rssi\":%d,\"best_rssi\":%d,\"worst_rssi\":%d,\"last_decode\":%u,",
        (unsigned)rs.syncs, (unsigned)rs.payloads, (unsigned)rs.decoded, (unsigned)rs.err_manchester,
-       (unsigned)rs.err_checksum, (unsigned)rs.err_flags, (unsigned)rs.fifo_overruns, rs.last_rssi_dbm,
+       (unsigned)rs.err_checksum, (unsigned)rs.err_flags, (unsigned)rs.near_miss, (unsigned)rs.fifo_overruns,
+       rs.last_rssi_dbm,
        rs.best_rssi_dbm, rs.worst_rssi_dbm, (unsigned)rs.last_decode_ms);
     display_settings_t dset;
     display_status_t dst;
     display_get_settings(&dset);
     display_get_status(&dst);
-    jp(j, "\"sync\":\"%s\",\"bitrate\":%u,\"disp\":{\"bright\":%u,\"dim\":%u,\"dim_after\":%u,\"shift\":%u,"
+    jp(j, "\"sync\":\"%s\",\"bitrate\":%u,\"drc\":%u,\"disp\":{\"bright\":%u,\"dim\":%u,\"dim_after\":%u,\"shift\":%u,"
           "\"dimmed\":%s,\"present\":%s,\"screen\":\"%s\"},\"tires\":[",
        rc.sync == RADIO_SYNC_AAA9 ? "aaa9" : rc.sync == RADIO_SYNC_5555 ? "5555" : "5556", (unsigned)rc.bitrate,
-       dset.bright, dset.dim, (unsigned)dset.dim_after_s, (unsigned)dset.shift_period_s,
+       rc.drate_comp, dset.bright, dset.dim, (unsigned)dset.dim_after_s, (unsigned)dset.shift_period_s,
        dst.dimmed ? "true" : "false", dst.present ? "true" : "false", dst.screen ? dst.screen : "");
     for (int i = 0; i < TIRE_COUNT; i++) {
         uint32_t id = tires_get(i);
@@ -155,10 +156,17 @@ static void json_sensors(jbuf_t *j)
         if (p->temp_valid) snprintf(temp, sizeof(temp), "%d", p->temp_c);
         net_fmt_time(wall, sizeof(wall), net_wall_time(e->last_ms));
         jp(j, "%s{\"id\":\"%08x\",\"psi\":%g,\"temp\":%s,\"mode\":\"%s\",\"code\":\"%06x\",\"flags\":\"%02x\","
-              "\"rssi\":%d,\"bursts\":%u,\"pkts\":%u,\"first\":%u,\"last\":%u,\"wall\":\"%s\"}",
+              "\"rssi\":%d,\"bursts\":%u,\"pkts\":%u,\"burst_pkts\":%u,\"first\":%u,\"last\":%u,\"wall\":\"%s\"",
            i ? "," : "", (unsigned)p->id, p->psi_x4 / 4.0, temp, tpms_ford_mode_str(p->mode),
            (unsigned)(p->code & 0xffffff), p->flags, e->rssi_best_dbm, (unsigned)e->bursts, (unsigned)e->packets,
-           (unsigned)e->first_ms, (unsigned)e->last_ms, wall);
+           e->burst_pkts, (unsigned)e->first_ms, (unsigned)e->last_ms, wall);
+        /* Receive quality: frequency offsets in Hz, LQI lower = better. */
+        if (e->q_n)
+            jp(j, ",\"q_n\":%u,\"foff\":%d,\"foff_mean\":%d,\"foff_min\":%d,\"foff_max\":%d,\"lqi\":%u,"
+                  "\"lqi_mean\":%.1f",
+               (unsigned)e->q_n, (int)e->foff_hz, (int)(e->foff_sum_hz / (int64_t)e->q_n), (int)e->foff_min_hz,
+               (int)e->foff_max_hz, e->lqi, (double)e->lqi_sum / e->q_n);
+        jp(j, "}");
     }
     jp(j, "]}");
 }
@@ -228,12 +236,14 @@ static esp_err_t h_rflog(httpd_req_t *req)
     char wall[24];
     net_fmt_time(wall, sizeof(wall), net_wall_time(0));
     jp(&j, "{\"now\":%u,\"time\":\"%s\",\"noise\":%d,\"syncs\":%u,\"payloads\":%u,\"decoded\":%u,"
-           "\"freq\":%u,\"pll\":%s,\"bw\":%u,\"sync\":\"%s\",\"event_db\":%d,\"capture_db\":%d,"
-           "\"events_total\":%u,\"events\":[",
+           "\"freq\":%u,\"pll\":%s,\"bw\":%u,\"bitrate\":%u,\"drc\":%u,\"sync\":\"%s\",\"event_db\":%d,"
+           "\"capture_db\":%d,\"near_miss\":%u,\"near_miss_bad\":%d,\"bad_bit_hist\":[",
        (unsigned)now_ms(), wall, rs.noise_dbm, (unsigned)rs.syncs, (unsigned)rs.payloads, (unsigned)rs.decoded,
-       (unsigned)rc.freq_hz, rs.pll_locked ? "true" : "false", (unsigned)rc.rxbw_hz,
-       rc.sync == RADIO_SYNC_AAA9 ? "aaa9" : rc.sync == RADIO_SYNC_5555 ? "5555" : "5556", RADIO_EVENT_DB,
-       RADIO_CAPTURE_DB, (unsigned)ev_total);
+       (unsigned)rc.freq_hz, rs.pll_locked ? "true" : "false", (unsigned)rc.rxbw_hz, (unsigned)rc.bitrate,
+       rc.drate_comp, rc.sync == RADIO_SYNC_AAA9 ? "aaa9" : rc.sync == RADIO_SYNC_5555 ? "5555" : "5556",
+       RADIO_EVENT_DB, RADIO_CAPTURE_DB, (unsigned)rs.near_miss, RADIO_NEAR_MISS_BAD);
+    for (int i = 0; i < TPMS_FORD_PAYLOAD_BITS; i++) jp(&j, "%s%u", i ? "," : "", rs.bad_bit_hist[i]);
+    jp(&j, "],\"events_total\":%u,\"events\":[", (unsigned)ev_total);
     json_events(&j, ev, ne);
     ne = radio_get_top_events(ev, RADIO_TOP_EVENTS);
     jp(&j, "],\"top_events\":[");
@@ -243,9 +253,23 @@ static esp_err_t h_rflog(httpd_req_t *req)
         char hex[2 * RADIO_CAPTURE_MAX + 1];
         for (int k = 0; k < cap[i].len; k++) sprintf(hex + 2 * k, "%02x", cap[i].data[k]);
         net_fmt_time(wall, sizeof(wall), net_wall_time(cap[i].ms));
-        jp(&j, "%s{\"ms\":%u,\"wall\":\"%s\",\"rssi\":%d,\"noise\":%d,\"status\":\"%s\",\"hex\":\"%s\"}",
+        jp(&j, "%s{\"ms\":%u,\"wall\":\"%s\",\"rssi\":%d,\"noise\":%d,\"status\":\"%s\",\"hex\":\"%s\"",
            i ? "," : "", (unsigned)cap[i].ms, wall, cap[i].rssi_dbm, cap[i].noise_dbm,
            tpms_ford_status_str((tpms_ford_status_t)cap[i].status), hex);
+        if (cap[i].quality) jp(&j, ",\"foff\":%d,\"lqi\":%u", (int)cap[i].freq_off_hz, cap[i].lqi);
+        /* Damaged bit positions, listed when few: a real packet with a few bad chips. */
+        if (rc.sync != RADIO_SYNC_5555) {
+            uint64_t bad = tpms_ford_bad_pairs(cap[i].data, cap[i].len * 8, 0);
+            int nbad = __builtin_popcountll(bad);
+            jp(&j, ",\"bad\":%d", nbad);
+            if (nbad && nbad <= RADIO_NEAR_MISS_BAD) {
+                jp(&j, ",\"bad_at\":[");
+                for (int b = 0, k = 0; b < TPMS_FORD_PAYLOAD_BITS; b++)
+                    if (bad >> b & 1) jp(&j, "%s%d", k++ ? "," : "", b);
+                jp(&j, "]");
+            }
+        }
+        jp(&j, "}");
     }
     jp(&j, "]}");
     httpd_resp_set_type(req, "application/json");
@@ -290,7 +314,7 @@ static esp_err_t reply(httpd_req_t *req, const char *err)
     return httpd_resp_sendstr(req, buf);
 }
 
-/* POST /api/radio: freq (MHz) bw (kHz) sync (5556|aaa9|5555) bitrate | defaults=1 */
+/* POST /api/radio: freq (MHz) bw (kHz) sync (5556|aaa9|5555) bitrate drc (0-3) | defaults=1 */
 static esp_err_t h_radio(httpd_req_t *req)
 {
     char form[256], v[24];
@@ -304,6 +328,11 @@ static esp_err_t h_radio(httpd_req_t *req)
         /* The chip snaps the bandwidth to the nearest one it supports. */
         if (form_get(form, "bw", v, sizeof(v))) c.rxbw_hz = (uint32_t)(atof(v) * 1e3 + 0.5);
         if (form_get(form, "bitrate", v, sizeof(v))) c.bitrate = (uint32_t)atoi(v);
+        if (form_get(form, "drc", v, sizeof(v))) {
+            int d = atoi(v);
+            if (d < 0 || d > 3) return reply(req, "drc must be 0 (off) .. 3 (+/-12.5 %)");
+            c.drate_comp = (uint8_t)d;
+        }
         if (form_get(form, "sync", v, sizeof(v))) {
             if (!strcmp(v, "5556")) c.sync = RADIO_SYNC_5556;
             else if (!strcmp(v, "aaa9")) c.sync = RADIO_SYNC_AAA9;

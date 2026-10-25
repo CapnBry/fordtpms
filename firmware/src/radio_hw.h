@@ -26,6 +26,9 @@ typedef struct {
     int     payload_len;      /* > 0: payload[] holds a received payload */
     bool    payload_rssi_valid;  /* else the payload uses the RSSI latched at sync */
     int     payload_rssi_dbm;
+    bool    payload_quality;  /* payload_freq_off_hz and payload_lqi are valid */
+    int32_t payload_freq_off_hz;
+    uint8_t payload_lqi;
     uint8_t payload[32];
     bool    idle;             /* between packets: idle_rssi_dbm is a noise sample */
     int     idle_rssi_dbm;

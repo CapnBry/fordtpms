@@ -10,7 +10,7 @@
 #include "tpms_ford.h"
 
 /* Packet sink shared by the radio task and the CLI 'inject' command. */
-void app_on_packet(const tpms_ford_t *pkt, int rssi_dbm, uint32_t ms);
+void app_on_packet(const tpms_ford_t *pkt, const radio_rx_info_t *rx, uint32_t ms);
 
 /* Settings changes from the CLI and web UI: apply, then save to NVS. */
 esp_err_t app_set_radio(const radio_config_t *cfg);

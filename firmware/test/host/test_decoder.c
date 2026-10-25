@@ -126,6 +126,23 @@ int main(void)
         CHECK(tpms_ford_search(frame, sizeof(frame) * 8, &t) == TPMS_FORD_OK && t.id == 0xfeedf00d, "encode -> search");
     }
 
+    /* Bad pair mask, on CC1101 FIFO captures from 2026-10-25: 364318f4 with
+     * payload bit 2 damaged, a clean 36432875, and a noise payload. */
+    {
+        static const uint8_t near[16] = {0x52, 0x69, 0x65, 0x5a, 0x56, 0x95, 0xaa, 0x65,
+                                         0x96, 0xa6, 0x66, 0xa5, 0x55, 0x69, 0x95, 0x65};
+        static const uint8_t good[16] = {0x5a, 0x69, 0x65, 0x5a, 0x59, 0x95, 0x6a, 0x66,
+                                         0x96, 0xa6, 0x66, 0x9a, 0x55, 0x69, 0x56, 0x65};
+        static const uint8_t noise[16] = {0x91, 0x56, 0x5b, 0x39, 0xa0, 0xa9, 0x9f, 0xf8,
+                                          0xc1, 0x7e, 0xf3, 0x8a, 0xc8, 0x08, 0xe3, 0xe5};
+        CHECK(tpms_ford_decode_chips(near, 128, 0, false, &t) == TPMS_FORD_ERR_MANCHESTER, "near miss rejected");
+        CHECK(tpms_ford_bad_pairs(near, 128, 0) == 1ull << 2, "near miss mask %llx",
+              (unsigned long long)tpms_ford_bad_pairs(near, 128, 0));
+        CHECK(tpms_ford_bad_pairs(good, 128, 0) == 0, "clean packet mask");
+        CHECK(__builtin_popcountll(tpms_ford_bad_pairs(noise, 128, 0)) > 20, "noise has many bad pairs");
+        CHECK(tpms_ford_bad_pairs(good, 127, 0) == 0, "short input");
+    }
+
     memset(b, 0, sizeof(b));
     CHECK(tpms_ford_decode_bytes(b, &t) == TPMS_FORD_ERR_ZERO, "zero payload reject");
 

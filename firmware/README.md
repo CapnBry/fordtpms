@@ -223,7 +223,7 @@ level is INFO.
 | `help` | List commands |
 | `metrics` / `stats` | Uptime, heap, radio chip and config, PLL lock, noise floor, sync/decode/error counters, IRQ counts, RSSI range, display state. `metrics reset` clears counters |
 | `sensors` | Table of the last 20 unique sensor IDs, newest first: PSI, kPa, temperature, mode, code, flags, RSSI, bursts, packets, time last seen. `sensors clear` |
-| `radio` | Show or set radio settings: `radio freq 315.0 bw 83.3 sync 5556 bitrate 19231`, `radio defaults` |
+| `radio` | Show or set radio settings: `radio freq 315.0 bw 83.3 sync 5556 bitrate 19231 drc 1`, `radio defaults` (`drc`: data rate offset tracking, 0 off … 3 ±12.5 %, CC1101) |
 | `raw on\|off` | Log every received payload (hex) with its decode result |
 | `rflog [clear]` | RF energy events and strong raw payloads (see [Troubleshooting reception](#troubleshooting-reception)); also `GET /api/rflog` |
 | `regs` | CC1101 registers, state, lock and last frequency offset; LR1121 status, errors, counters, temperature |
@@ -409,7 +409,20 @@ The MQTT and mDNS clients come from the ESP-IDF component registry
   * **Strongest events**: the 16 loudest since boot, so a real burst isn't
     pushed out by later weak ones
   * **Strong payloads**: raw bytes of every payload whose sync RSSI was at
-    least 6 dB above the noise floor, decoded or not (last 24)
+    least 6 dB above the noise floor, decoded or not (last 24). On the CC1101
+    each also has `foff` (Hz, the chip's frequency offset estimate at the sync
+    word) and `lqi` (0–127, lower = cleaner). `/api/rflog` also has `bad`, the
+    number of invalid Manchester pairs, and `bad_at`, the damaged bit positions
+    when there are only a few.
+
+  `near_miss` counts Manchester failures with 1–4 bad pairs. Noise payloads
+  have about 30, so these are real packets with a few damaged chips.
+  `bad_bit_hist` counts, per payload bit, how often that bit was the damaged
+  one; damage clustered at the start points at demodulator settling (FOC, bit
+  sync), damage spread out at SNR. Per sensor, `/api/state` (and `sensors` on
+  the CLI) has `burst_pkts` (of 4 in the latest burst), `foff` latest / mean /
+  min / max and `lqi` latest / mean. Use the mean offsets to center `radio
+  freq`, and their spread to size `radio bw`.
 
   How to read it: strong events with **no syncs** mean the packet engine never
   matched the sync word, so suspect polarity (`radio sync aaa9` or `5555`) or

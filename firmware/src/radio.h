@@ -29,13 +29,30 @@ typedef struct {
     uint32_t bitrate;     /* chips per second */
     uint32_t rxbw_hz;     /* single-sided channel filter bandwidth */
     radio_sync_mode_t sync;
+    /* Data rate offset tracking in the bit synchroniser (CC1101 BSCFG.BS_LIMIT):
+     * 0 off, 1 +/-3.125 %, 2 +/-6.25 %, 3 +/-12.5 %. Ignored by the LR1121.
+     * Kept last: radio settings saved before it existed are the prefix. */
+    uint8_t  drate_comp;
 } radio_config_t;
+
+/* Receive quality of one payload. */
+typedef struct {
+    int      rssi_dbm;        /* latched at the sync word */
+    bool     quality;         /* freq_off_hz and lqi are valid (CC1101 only) */
+    int32_t  freq_off_hz;     /* carrier offset from the tuned frequency, as the chip's FOC measured it */
+    uint8_t  lqi;             /* CC1101 link quality, 0..127: lower = cleaner demodulation */
+} radio_rx_info_t;
 
 typedef struct {
     uint32_t syncs;           /* sync word matches */
     uint32_t payloads;        /* PayloadReady events */
     uint32_t decoded;         /* valid Ford packets */
     uint32_t err_manchester;
+    /* Manchester failures with 1..RADIO_NEAR_MISS_BAD bad pairs: real packets
+     * with a few damaged chips (noise payloads have ~30). bad_bit_hist[i]
+     * counts how often payload bit i was the damaged one. */
+    uint32_t near_miss;
+    uint16_t bad_bit_hist[TPMS_FORD_PAYLOAD_BITS];
     uint32_t err_checksum;
     uint32_t err_flags;       /* includes all-zero payloads */
     uint32_t fifo_overruns;
@@ -81,6 +98,7 @@ int radio_bandwidths(uint32_t *out, int max);
 #define RADIO_CAPTURE_DB  6
 #define RADIO_CAPTURES    24
 #define RADIO_CAPTURE_MAX 24   /* bytes: the longest payload (sync 5555) */
+#define RADIO_NEAR_MISS_BAD 4
 
 typedef struct {
     uint32_t start_ms, end_ms;
@@ -91,6 +109,9 @@ typedef struct {
 typedef struct {
     uint32_t ms;
     int8_t   rssi_dbm, noise_dbm;
+    bool     quality;         /* see radio_rx_info_t */
+    uint8_t  lqi;
+    int32_t  freq_off_hz;
     uint8_t  status;          /* tpms_ford_status_t */
     uint8_t  len;
     uint8_t  data[RADIO_CAPTURE_MAX];
@@ -104,7 +125,7 @@ int radio_get_captures(radio_capture_t *out, int max, uint32_t *total);
 void radio_clear_log(void);
 
 /* Called from the radio task for each valid packet. */
-typedef void (*radio_packet_cb_t)(const tpms_ford_t *pkt, int rssi_dbm, uint32_t ms);
+typedef void (*radio_packet_cb_t)(const tpms_ford_t *pkt, const radio_rx_info_t *rx, uint32_t ms);
 
 esp_err_t radio_init(radio_packet_cb_t cb);
 void radio_get_stats(radio_stats_t *out);
@@ -141,6 +162,9 @@ int radio_pll_scan(const uint32_t *freqs_hz, int n, FILE *out);
  * (LR1121 LP PA -17..14). The CC1101 has one PA (-30..10 dBm) for both.
  */
 esp_err_t radio_tx_ford(const uint8_t payload[8], int count, int gap_ms, bool pa_boost, int power_dbm);
+
+/* "off", "3.125%", "6.25%", "12.5%" for radio_config_t.drate_comp. */
+const char *radio_drate_comp_str(uint8_t drate_comp);
 
 /* Enable logging of every raw payload (hex) at INFO level. */
 void radio_set_raw_log(bool on);

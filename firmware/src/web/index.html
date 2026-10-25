@@ -411,6 +411,9 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
         <option value="5556">5556 &middot; normal polarity</option><option value="aaa9">AAA9 &middot; inverted</option>
         <option value="5555">5555 &middot; either polarity</option></select><span class="hint"></span></div>
       <div class="field"><label for="r-bitrate">Chip rate</label><input id="r-bitrate" type="number" step="1" required><span class="hint">chip/s</span></div>
+      <div class="field"><label for="r-drc">Rate tracking</label><select id="r-drc">
+        <option value="0">off</option><option value="1">&plusmn;3.125 %</option><option value="2">&plusmn;6.25 %</option>
+        <option value="3">&plusmn;12.5 %</option></select><span class="hint">CC1101</span></div>
       <div class="m-note">Same settings as the <b>radio</b> CLI command. <span id="r-limits"></span> Changes apply immediately and survive reboots.</div>
       <div class="m-err" id="r-err"></div>
     </div>
@@ -894,11 +897,12 @@ $("t-clear").addEventListener("click", () => {
 });
 
 /* radio */
-function setRadio(c) {    /* freq Hz, bw Hz, sync, bitrate */
+function setRadio(c) {    /* freq Hz, bw Hz, sync, bitrate, drc */
   $("r-freq").value = (c.freq / 1e6).toFixed(3);
   $("r-bw").value = (c.bw / 1000).toFixed(1);
   $("r-sync").value = c.sync;
   $("r-bitrate").value = c.bitrate;
+  $("r-drc").value = c.drc ?? 0;
 }
 function fillRadio(r) {   /* limits, bandwidths and defaults of the fitted chip (status.radio) */
   $("r-chip").textContent = `${r.name} FSK`;
@@ -925,7 +929,7 @@ function openRadio() {
 $("open-radio").addEventListener("click", openRadio);
 $("r-save").addEventListener("click", () => {
   if (!$("f-radio").reportValidity()) return;
-  run("r-err", () => post("/api/radio", { freq: $("r-freq").value, bw: $("r-bw").value, sync: $("r-sync").value, bitrate: $("r-bitrate").value }), $("dlg-radio"));
+  run("r-err", () => post("/api/radio", { freq: $("r-freq").value, bw: $("r-bw").value, sync: $("r-sync").value, bitrate: $("r-bitrate").value, drc: $("r-drc").value }), $("dlg-radio"));
 });
 $("r-defaults").addEventListener("click", () => run("r-err", async () => {
   await post("/api/radio", { defaults: 1 });

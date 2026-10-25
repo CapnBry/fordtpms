@@ -89,6 +89,20 @@ tpms_ford_status_t tpms_ford_decode_chips(const uint8_t *chips, size_t nbits, si
     return tpms_ford_decode_bytes(bytes, out);
 }
 
+uint64_t tpms_ford_bad_pairs(const uint8_t *chips, size_t nbits, size_t bitpos)
+{
+    if (bitpos + 2 * TPMS_FORD_PAYLOAD_BITS > nbits) {
+        return 0;
+    }
+    uint64_t bad = 0;
+    for (int i = 0; i < TPMS_FORD_PAYLOAD_BITS; i++) {
+        if (chip_at(chips, bitpos + 2 * i) == chip_at(chips, bitpos + 2 * i + 1)) {
+            bad |= 1ull << i;
+        }
+    }
+    return bad;
+}
+
 tpms_ford_status_t tpms_ford_search(const uint8_t *chips, size_t nbits, tpms_ford_t *out)
 {
     tpms_ford_status_t best = TPMS_FORD_ERR_NOSYNC;

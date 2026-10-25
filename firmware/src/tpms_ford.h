@@ -68,6 +68,13 @@ tpms_ford_status_t tpms_ford_decode_chips(const uint8_t *chips, size_t nbits, si
                                           bool invert, tpms_ford_t *out);
 
 /*
+ * Invalid Manchester pairs ('00' or '11') among the 64 bits starting at chip
+ * `bitpos`: bit i of the result is set if payload bit i (0 = first on air)
+ * can't be decoded. 0 if the chips run short.
+ */
+uint64_t tpms_ford_bad_pairs(const uint8_t *chips, size_t nbits, size_t bitpos);
+
+/*
  * Search a raw chip stream of either polarity for the 16 chip frame start
  * (0x5556 / 0xAAA9: preamble tail + start delimiter) and decode the first valid packet after it. Returns the
  * "best" error seen if nothing decoded.

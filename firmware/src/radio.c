@@ -26,6 +26,7 @@ static const radio_config_t k_default_cfg = {
     .bitrate = 19231,      /* 52 us chips */
     .rxbw_hz = 83333,      /* +/-83 kHz: ~35 kHz deviation + sensor crystal error */
     .sync = RADIO_SYNC_5556,
+    .drate_comp = 1,       /* +/-3.125 %: follows a sensor whose chip clock is off */
 };
 static radio_config_t s_cfg = k_default_cfg;
 static radio_stats_t s_stats;
@@ -113,8 +114,9 @@ static void hist_push(int dbm)
     if (s_hist_count < HIST_LEN) s_hist_count++;
 }
 
-static void handle_payload(const uint8_t *buf, int n, int rssi, uint32_t sync_ms)
+static void handle_payload(const uint8_t *buf, int n, const radio_rx_info_t *rx, uint32_t sync_ms)
 {
+    int rssi = rx->rssi_dbm;
     s_stats.payloads++;
 
     tpms_ford_t pkt;
@@ -140,6 +142,9 @@ static void handle_payload(const uint8_t *buf, int n, int rssi, uint32_t sync_ms
         c->ms = sync_ms;
         c->rssi_dbm = (int8_t)rssi;
         c->noise_dbm = (int8_t)s_stats.noise_dbm;
+        c->quality = rx->quality;
+        c->lqi = rx->lqi;
+        c->freq_off_hz = rx->freq_off_hz;
         c->status = (uint8_t)st;
         c->len = (uint8_t)(n < RADIO_CAPTURE_MAX ? n : RADIO_CAPTURE_MAX);
         memcpy(c->data, buf, c->len);
@@ -152,7 +157,17 @@ static void handle_payload(const uint8_t *buf, int n, int rssi, uint32_t sync_ms
         if (s_stats.decoded == 1 || rssi > s_stats.best_rssi_dbm) s_stats.best_rssi_dbm = (int16_t)rssi;
         if (s_stats.decoded == 1 || rssi < s_stats.worst_rssi_dbm) s_stats.worst_rssi_dbm = (int16_t)rssi;
         break;
-    case TPMS_FORD_ERR_MANCHESTER: s_stats.err_manchester++; break;
+    case TPMS_FORD_ERR_MANCHESTER: {
+        s_stats.err_manchester++;
+        /* Fixed-position modes only: the 5555 search has no single payload start. */
+        uint64_t bad = s_cfg.sync == RADIO_SYNC_5555 ? 0 : tpms_ford_bad_pairs(buf, n * 8, 0);
+        if (bad && __builtin_popcountll(bad) <= RADIO_NEAR_MISS_BAD) {
+            s_stats.near_miss++;
+            for (int i = 0; i < TPMS_FORD_PAYLOAD_BITS; i++)
+                if (bad >> i & 1) s_stats.bad_bit_hist[i]++;
+        }
+        break;
+    }
     case TPMS_FORD_ERR_CHECKSUM: s_stats.err_checksum++; break;
     case TPMS_FORD_ERR_FLAGS:
     case TPMS_FORD_ERR_ZERO: s_stats.err_flags++; break;
@@ -162,7 +177,7 @@ static void handle_payload(const uint8_t *buf, int n, int rssi, uint32_t sync_ms
     if (st == TPMS_FORD_OK && s_cb) {
         /* Callback runs without the radio lock held. */
         xSemaphoreGive(s_lock);
-        s_cb(&pkt, rssi, sync_ms);
+        s_cb(&pkt, rx, sync_ms);
         xSemaphoreTake(s_lock, portMAX_DELAY);
     }
 }
@@ -207,7 +222,9 @@ static void radio_task(void *arg)
                 pkt_rssi = p.payload_rssi_dbm;
                 s_stats.last_rssi_dbm = (int16_t)pkt_rssi;
             }
-            handle_payload(p.payload, p.payload_len, pkt_rssi, sync_ms);
+            radio_rx_info_t rx = {.rssi_dbm = pkt_rssi, .quality = p.payload_quality,
+                                  .freq_off_hz = p.payload_freq_off_hz, .lqi = p.payload_lqi};
+            handle_payload(p.payload, p.payload_len, &rx, sync_ms);
         }
         if (p.idle) {
             if (p.idle_rssi_dbm > hist_max) hist_max = p.idle_rssi_dbm;
@@ -328,6 +345,7 @@ esp_err_t radio_set_config(const radio_config_t *cfg)
         return ESP_ERR_INVALID_ARG;
     if (cfg->bitrate < radio_hw_caps.bitrate_min || cfg->bitrate > radio_hw_caps.bitrate_max)
         return ESP_ERR_INVALID_ARG;
+    if (cfg->drate_comp > 3) return ESP_ERR_INVALID_ARG;
     if (!s_stats.present) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_cfg = *cfg;
@@ -335,8 +353,8 @@ esp_err_t radio_set_config(const radio_config_t *cfg)
     esp_err_t err = apply_config();
     radio_config_t now = s_cfg;
     xSemaphoreGive(s_lock);
-    ESP_LOGI(TAG, "reconfigured: %.3f MHz, %u chip/s, RxBw %u Hz", now.freq_hz / 1e6, (unsigned)now.bitrate,
-             (unsigned)now.rxbw_hz);
+    ESP_LOGI(TAG, "reconfigured: %.3f MHz, %u chip/s, RxBw %u Hz, drate comp %u", now.freq_hz / 1e6,
+             (unsigned)now.bitrate, (unsigned)now.rxbw_hz, now.drate_comp);
     return err;
 }
 
@@ -433,6 +451,12 @@ esp_err_t radio_tx_ford(const uint8_t payload[8], int count, int gap_ms, bool pa
     ESP_LOGI(TAG, "tx %d frame(s) %s %d dBm at %.3f MHz: %s", count, pa_boost ? "pa" : "rfo", power_dbm,
              s_cfg.freq_hz / 1e6, esp_err_to_name(err));
     return err;
+}
+
+const char *radio_drate_comp_str(uint8_t drate_comp)
+{
+    static const char *const names[] = {"off", "3.125%", "6.25%", "12.5%"};
+    return drate_comp < 4 ? names[drate_comp] : "?";
 }
 
 void radio_set_raw_log(bool on)

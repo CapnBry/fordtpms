@@ -6,7 +6,9 @@
  * also polls PKTSTATUS/RXBYTES every ~5 ms, so a missed edge only costs
  * latency. After a packet the chip stays in RX (MCSM1.RXOFF_MODE), so
  * back-to-back frames are not missed; each payload carries the appended RSSI
- * and LQI status bytes.
+ * and LQI status bytes. FREQEST (the frequency offset compensation loop's
+ * estimate) is read when the sync word is seen: the loop has settled on the
+ * preamble by then, and after the packet it drifts off on noise again.
  *
  * Chip select is driven in software: the CC1101 needs SO low (crystal running)
  * after CSn falls before the first clock edge, and only a GPIO CS can wait for
@@ -136,6 +138,7 @@ static spi_device_handle_t s_spi;
 static radio_config_t s_cfg;       /* last applied, for the probe */
 static uint8_t s_payload_len = TPMS_FORD_CHIP_BYTES;
 static bool s_in_packet, s_locked, s_spi_timeout;
+static int8_t s_sync_freqest;
 static uint32_t s_sync_ms, s_lock_check_ms, s_recal_ms;
 static uint32_t s_rx_restarts, s_recals;
 
@@ -210,6 +213,12 @@ static void wr_burst(uint8_t reg, const uint8_t *buf, size_t n)
 static int rssi_from_raw(uint8_t raw)
 {
     return (int8_t)raw / 2 - RSSI_OFFSET;
+}
+
+/* FREQEST: two's complement, FXOSC / 2^14 (1.59 kHz) per step; positive = carrier above the tuned frequency. */
+static int32_t freqest_hz(int8_t fe)
+{
+    return (int32_t)(fe * (int64_t)FXOSC / 16384);
 }
 
 static uint8_t marcstate(void)
@@ -395,7 +404,7 @@ esp_err_t hw_apply(const radio_config_t *cfg, bool *locked)
     wr(REG_MCSM1, 0x3C);               /* stay in RX after a packet, IDLE after TX */
     wr(REG_MCSM0, 0x18);               /* calibrate IDLE -> RX/TX, PO_TIMEOUT 149 us */
     wr(REG_FOCCFG, 0x16);              /* frequency offset compensation +/-BW/4: sensor crystal error */
-    wr(REG_BSCFG, 0x6C);
+    wr(REG_BSCFG, 0x6C | (cfg->drate_comp & 3));  /* BS_LIMIT: data rate offset tracking range */
     wr(REG_AGCCTRL2, 0x43);
     wr(REG_AGCCTRL1, 0x40);
     wr(REG_AGCCTRL0, 0x91);
@@ -453,6 +462,7 @@ void hw_poll(uint32_t bits, uint32_t now, radio_hw_poll_t *o, radio_stats_t *st)
         if ((pkt & PKTSTATUS_SFD) && !s_in_packet) {
             o->sync = true;
             o->sync_rssi_dbm = rssi_from_raw(rd_status(ST_RSSI));  /* frozen at the sync word */
+            s_sync_freqest = (int8_t)rd_status(ST_FREQEST);
             s_sync_ms = now;
             s_in_packet = true;
             if (!(bits & RADIO_NOTIFY_SYNC)) st->polled_events++;
@@ -464,12 +474,16 @@ void hw_poll(uint32_t bits, uint32_t now, radio_hw_poll_t *o, radio_stats_t *st)
                 /* Sync and end of packet both fell between two polls. */
                 o->sync = true;
                 o->sync_rssi_dbm = rssi_from_raw(buf[s_payload_len]);
+                s_sync_freqest = (int8_t)rd_status(ST_FREQEST);  /* late: may have moved since the packet */
             }
             if (!(bits & RADIO_NOTIFY_PAYLOAD)) st->polled_events++;
             memcpy(o->payload, buf, s_payload_len);
             o->payload_len = s_payload_len;
             o->payload_rssi_valid = true;
             o->payload_rssi_dbm = rssi_from_raw(buf[s_payload_len]);  /* appended: RSSI at sync */
+            o->payload_quality = true;
+            o->payload_freq_off_hz = freqest_hz(s_sync_freqest);
+            o->payload_lqi = buf[s_payload_len + 1] & 0x7f;  /* appended; bit 7 is CRC_OK (unused) */
             /* The next packet's sync may already be in; the next poll sees SFD again. */
             s_in_packet = false;
         } else if (s_in_packet && !(pkt & PKTSTATUS_SFD) && (rxb & 0x7f) == 0) {
@@ -656,7 +670,7 @@ void hw_dump(FILE *out)
             s_locked ? "locked" : "NOT LOCKED", fscal1, (unsigned)s_rx_restarts, (unsigned)s_recals);
     fprintf(out, "rssi now      %d dBm\n", rssi_from_raw(rd_status(ST_RSSI)));
     int8_t fe = (int8_t)rd_status(ST_FREQEST);
-    fprintf(out, "last packet   frequency offset %+d Hz, LQI %u\n", (int)(fe * (int64_t)FXOSC / 16384),
+    fprintf(out, "freqest now   %+d Hz (FOC loop, follows noise between packets), LQI %u\n", (int)freqest_hz(fe),
             rd_status(ST_LQI) & 0x7f);
     uint8_t pkt = rd_status(ST_PKTSTATUS);
     fprintf(out, "pktstatus     0x%02x (GDO0 pin %d, GDO2 pin %d), rxbytes 0x%02x\n", pkt,

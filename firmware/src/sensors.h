@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "radio.h"
 #include "tpms_ford.h"
 
 #define SENSORS_MAX 20
@@ -21,12 +22,20 @@ typedef struct {
     uint32_t last_ms;       /* last packet */
     uint32_t packets;       /* all packets incl. repeats */
     uint32_t bursts;        /* distinct transmissions */
+    uint8_t  burst_pkts;    /* packets received in the latest burst (the sensors send 4) */
+    /* Receive quality (radio_rx_info_t), over all packets with quality data. */
+    uint32_t q_n;           /* packets with quality data */
+    int32_t  foff_hz;       /* frequency offset of the latest packet */
+    int32_t  foff_min_hz, foff_max_hz;
+    int64_t  foff_sum_hz;   /* mean = foff_sum_hz / q_n */
+    uint8_t  lqi;           /* LQI of the latest packet */
+    uint32_t lqi_sum;       /* mean = lqi_sum / q_n */
     bool     published;     /* latest burst handed out by sensors_take_finished() */
 } sensor_entry_t;
 
 void sensors_init(void);
 /* Returns true if this packet starts a new burst (vs. a repeat). */
-bool sensors_add(const tpms_ford_t *pkt, int rssi_dbm, uint32_t ms);
+bool sensors_add(const tpms_ford_t *pkt, const radio_rx_info_t *rx, uint32_t ms);
 /* Copies up to `max` entries, most recently heard first. Returns count. */
 int sensors_snapshot(sensor_entry_t *out, int max);
 /* Increments for every new burst; lets the UI notice fresh data cheaply. */

@@ -15,8 +15,9 @@ void sensors_init(void)
     s_lock = xSemaphoreCreateMutex();
 }
 
-bool sensors_add(const tpms_ford_t *pkt, int rssi_dbm, uint32_t ms)
+bool sensors_add(const tpms_ford_t *pkt, const radio_rx_info_t *rx, uint32_t ms)
 {
+    int rssi_dbm = rx->rssi_dbm;
     bool new_burst = true;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     sensor_entry_t *e = NULL;
@@ -46,6 +47,17 @@ bool sensors_add(const tpms_ford_t *pkt, int rssi_dbm, uint32_t ms)
     if (new_burst || rssi_dbm > e->rssi_best_dbm) e->rssi_best_dbm = (int16_t)rssi_dbm;
     e->last_ms = ms;
     e->packets++;
+    if (rx->quality) {
+        if (!e->q_n || rx->freq_off_hz < e->foff_min_hz) e->foff_min_hz = rx->freq_off_hz;
+        if (!e->q_n || rx->freq_off_hz > e->foff_max_hz) e->foff_max_hz = rx->freq_off_hz;
+        e->q_n++;
+        e->foff_hz = rx->freq_off_hz;
+        e->foff_sum_hz += rx->freq_off_hz;
+        e->lqi = rx->lqi;
+        e->lqi_sum += rx->lqi;
+    }
+    if (new_burst) e->burst_pkts = 0;
+    if (e->burst_pkts < UINT8_MAX) e->burst_pkts++;
     if (new_burst) {
         e->bursts++;
         e->published = false;
