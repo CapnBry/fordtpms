@@ -77,6 +77,16 @@ static void jp(jbuf_t *j, const char *fmt, ...)
 
 static void json_sensors(jbuf_t *j);
 
+/* "afc":{...}, with the trailing comma. ok: the chip measures offsets (CC1101). */
+static void json_afc(jbuf_t *j)
+{
+    radio_afc_t a;
+    radio_get_afc(&a);
+    jp(j, "\"afc\":{\"ok\":%s,\"on\":%s,\"est\":%d,\"applied\":%d,\"n\":%u},",
+       radio_caps()->freq_offset ? "true" : "false", a.on ? "true" : "false", (int)a.est_hz, (int)a.applied_hz,
+       (unsigned)a.pkts);
+}
+
 /* Status object; with_sensors embeds the sensor table as "sensors". */
 static void json_status(jbuf_t *j, bool with_sensors)
 {
@@ -112,6 +122,7 @@ static void json_status(jbuf_t *j, bool with_sensors)
     int nbw = radio_bandwidths(bws, 32);
     for (int i = 0; i < nbw; i++) jp(j, "%s%u", i ? "," : "", (unsigned)bws[i]);
     jp(j, "]},");
+    json_afc(j);
     jp(j, "\"hist\":[");
     for (int i = 0; i < nh; i++) jp(j, "%s%d", i ? "," : "", hist[i]);
     jp(j, "],\"syncs\":%u,\"payloads\":%u,\"decoded\":%u,\"err_manchester\":%u,\"err_checksum\":%u,"
@@ -255,7 +266,9 @@ static esp_err_t h_rflog(httpd_req_t *req)
        rc.drate_comp, rc.sync == RADIO_SYNC_AAA9 ? "aaa9" : rc.sync == RADIO_SYNC_5555 ? "5555" : "5556",
        RADIO_EVENT_DB, RADIO_CAPTURE_DB, (unsigned)rs.near_miss, RADIO_NEAR_MISS_BAD);
     for (int i = 0; i < TPMS_FORD_PAYLOAD_BITS; i++) jp(&j, "%s%u", i ? "," : "", rs.bad_bit_hist[i]);
-    jp(&j, "],\"events_total\":%u,\"events\":[", (unsigned)ev_total);
+    jp(&j, "],");
+    json_afc(&j);
+    jp(&j, "\"events_total\":%u,\"events\":[", (unsigned)ev_total);
     json_events(&j, ev, ne);
     ne = radio_get_top_events(ev, RADIO_TOP_EVENTS);
     jp(&j, "],\"top_events\":[");
@@ -326,7 +339,7 @@ static esp_err_t reply(httpd_req_t *req, const char *err)
     return httpd_resp_sendstr(req, buf);
 }
 
-/* POST /api/radio: freq (MHz) bw (kHz) sync (5556|aaa9|5555) bitrate drc (0-3) | defaults=1 */
+/* POST /api/radio: freq (MHz) bw (kHz) sync (5556|aaa9|5555) bitrate drc (0-3) afc (0|1) | defaults=1 */
 static esp_err_t h_radio(httpd_req_t *req)
 {
     char form[256], v[24];
@@ -352,7 +365,9 @@ static esp_err_t h_radio(httpd_req_t *req)
             else return reply(req, "sync must be 5556, aaa9 or 5555");
         }
     }
+    int afc = form_get(form, "defaults", v, sizeof(v)) ? 0 : form_get(form, "afc", v, sizeof(v)) ? atoi(v) != 0 : -1;
     esp_err_t err = app_set_radio(&c);
+    if (afc >= 0 && (err == ESP_OK || err == ESP_ERR_INVALID_STATE)) app_set_afc(afc);
     const radio_caps_t *caps = radio_caps();
     char msg[160];
     if (err == ESP_ERR_INVALID_STATE) {

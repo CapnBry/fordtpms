@@ -79,6 +79,15 @@ esp_err_t app_set_radio(const radio_config_t *cfg)
     return serr != ESP_OK ? serr : err;
 }
 
+void app_set_afc(bool on)
+{
+    radio_set_afc(on);
+    radio_afc_t a;
+    radio_get_afc(&a);  /* off on chips that measure no offset */
+    uint8_t v = a.on;
+    settings_save("afc", &v, sizeof(v));
+}
+
 void app_set_display(const display_settings_t *set)
 {
     display_set_settings(set);
@@ -166,6 +175,8 @@ void app_main(void)
         radio_default_config(&rc);
         radio_set_config(&rc);
     }
+    uint8_t afc;
+    if (settings_load("afc", &afc, sizeof(afc))) radio_set_afc(afc);
     display_settings_t ds;
     if (settings_load("display", &ds, sizeof(ds))) display_set_settings(&ds);
     display_init();

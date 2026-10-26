@@ -247,7 +247,7 @@ level is INFO.
 | `help` | List commands |
 | `metrics` / `stats` | Uptime, heap, radio chip and config, PLL lock, noise floor, sync/decode/error counters, IRQ counts, RSSI range, display state. `metrics reset` clears counters |
 | `sensors` | Table of the last 20 unique sensor IDs, newest first: PSI, kPa, temperature, mode, code, flags, RSSI, bursts, packets, time last seen. `sensors clear` |
-| `radio` | Show or set radio settings: `radio freq 315.0 bw 83.3 sync 5556 bitrate 19231 drc 1`, `radio defaults` (`drc`: data rate offset tracking, 0 off … 3 ±12.5 %, CC1101) |
+| `radio` | Show or set radio settings: `radio freq 315.0 bw 83.3 sync 5556 bitrate 19231 drc 1`, `radio defaults` (`drc`: data rate offset tracking, 0 off … 3 ±12.5 %, CC1101; `afc on\|off`: auto-tune, see below) |
 | `raw on\|off` | Log every received payload (hex) with its decode result |
 | `rflog [clear]` | RF energy events and strong raw payloads (see [Troubleshooting reception](#troubleshooting-reception)); also `GET /api/rflog` |
 | `regs` | CC1101 registers, state, lock and last frequency offset; LR1121 status, errors, counters, temperature |
@@ -471,6 +471,16 @@ The MQTT and mDNS clients come from the ESP-IDF component registry
   needing a little more clean preamble.
 * Frequency offset: sensors can be ±20 kHz off. Use `radio bw 100` or
   `radio freq 315.02` to compensate.
+* Auto-tune (AFC, CC1101 only): the *Auto-tune* checkbox in the Radio dialog
+  (`radio afc on`, `afc=1` on `/api/radio`). Each decoded packet moves an
+  estimate 1/10 of the way towards its carrier's offset from the configured
+  frequency. With auto-tune on, the estimate is tuned in as an overlay once no
+  packet has arrived for 3 s, if it moved at least 1 kHz (clamped to ±half the
+  bandwidth). The header then shows the overlay, e.g. `315.023 MHz (+1,586Hz)`.
+  The checkbox is saved, but the estimate and overlay are not: they start at 0
+  at boot and whenever the configured frequency changes. *Apply* copies
+  frequency + estimate into the Frequency field, which Engage saves. `afc` in
+  `/api/state` and `/api/rflog` has `est`, `applied` (Hz) and `n` (packets).
 * `raw on` shows every payload, and the decode error tells how far it got
   (`manchester` < `checksum` < `flags`).
 

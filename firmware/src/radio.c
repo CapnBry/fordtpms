@@ -44,6 +44,12 @@ static radio_capture_t s_caps[RADIO_CAPTURES];
 static int s_cap_head, s_cap_count;
 static uint32_t s_cap_total;
 
+/* AFC (radio.h). s_afc_dirty: est moved since the last retune check. */
+static bool s_afc_on, s_afc_dirty;
+static float s_afc_est_hz;
+static int32_t s_afc_applied_hz;
+static uint32_t s_afc_pkts, s_afc_last_ms;
+
 /* ------------------------------------------------------- backend glue -- */
 
 int radio_payload_len(radio_sync_mode_t m)
@@ -72,22 +78,68 @@ static const char *sync_str(radio_sync_mode_t s)
     return s == RADIO_SYNC_5556 ? "5556" : s == RADIO_SYNC_AAA9 ? "aaa9" : "5555";
 }
 
-/* Must hold s_lock. */
+/* Must hold s_lock. Tunes s_cfg plus the AFC overlay. */
 static esp_err_t apply_config(void)
 {
     bool locked = false;
-    esp_err_t err = hw_apply(&s_cfg, &locked);
+    radio_config_t tuned = s_cfg;
+    tuned.freq_hz += s_afc_applied_hz;
+    esp_err_t err = hw_apply(&tuned, &locked);
     s_stats.pll_locked = locked;
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "programming the radio failed: %s", esp_err_to_name(err));
         return err;
     }
     if (!locked) {
-        ESP_LOGE(TAG, "PLL NOT LOCKED at %.3f MHz: the %s cannot tune here (%s)", s_cfg.freq_hz / 1e6,
+        ESP_LOGE(TAG, "PLL NOT LOCKED at %.3f MHz: the %s cannot tune here (%s)", tuned.freq_hz / 1e6,
                  radio_hw_caps.name, radio_hw_caps.freq_note);
         return ESP_ERR_INVALID_STATE;
     }
     return ESP_OK;
+}
+
+/* ------------------------------------------------------------- AFC ----- */
+
+/* Must hold s_lock. */
+static void afc_reset(void)
+{
+    s_afc_est_hz = 0;
+    s_afc_applied_hz = 0;
+    s_afc_pkts = 0;
+    s_afc_dirty = false;
+}
+
+/* Must hold s_lock. The overlay AFC wants now: est clamped to +/- half the channel. */
+static int32_t afc_target(void)
+{
+    if (!s_afc_on) return 0;
+    int32_t lim = (int32_t)(s_cfg.rxbw_hz / 2);
+    int32_t t = (int32_t)(s_afc_est_hz + (s_afc_est_hz < 0 ? -0.5f : 0.5f));
+    return t > lim ? lim : t < -lim ? -lim : t;
+}
+
+/* Must hold s_lock. Retunes if the target left the deadband (or AFC went off). */
+static void afc_retune(void)
+{
+    int32_t t = afc_target();
+    int32_t d = t - s_afc_applied_hz;
+    if (t == s_afc_applied_hz || (t != 0 && d < RADIO_AFC_DEADBAND_HZ && d > -RADIO_AFC_DEADBAND_HZ)) return;
+    ESP_LOGI(TAG, "AFC: %+d -> %+d Hz (est %+.0f Hz over %u pkts), tuning %.6f MHz", (int)s_afc_applied_hz, (int)t,
+             s_afc_est_hz, (unsigned)s_afc_pkts, (s_cfg.freq_hz + t) / 1e6);
+    s_afc_applied_hz = t;
+    apply_config();
+}
+
+/* Must hold s_lock. */
+static void afc_packet(const radio_rx_info_t *rx, uint32_t ms)
+{
+    if (!rx->quality) return;
+    /* foff is relative to what is tuned now, so add the overlay back. */
+    float measured = (float)(s_afc_applied_hz + rx->freq_off_hz);
+    s_afc_est_hz += (measured - s_afc_est_hz) / 10;
+    s_afc_pkts++;
+    s_afc_last_ms = ms;
+    s_afc_dirty = true;
 }
 
 /* --------------------------------------------------------- receive ----- */
@@ -174,6 +226,8 @@ static void handle_payload(const uint8_t *buf, int n, const radio_rx_info_t *rx,
     default: break;
     }
 
+    if (st == TPMS_FORD_OK) afc_packet(rx, sync_ms);
+
     if (st == TPMS_FORD_OK && s_cb) {
         /* Callback runs without the radio lock held. */
         xSemaphoreGive(s_lock);
@@ -225,6 +279,11 @@ static void radio_task(void *arg)
             radio_rx_info_t rx = {.rssi_dbm = pkt_rssi, .quality = p.payload_quality,
                                   .freq_off_hz = p.payload_freq_off_hz, .lqi = p.payload_lqi};
             handle_payload(p.payload, p.payload_len, &rx, sync_ms);
+        }
+        if (s_afc_dirty && now - s_afc_last_ms >= RADIO_AFC_QUIET_MS) {
+            /* The burst is over: retune between packets, never during one. */
+            s_afc_dirty = false;
+            afc_retune();
         }
         if (p.idle) {
             if (p.idle_rssi_dbm > hist_max) hist_max = p.idle_rssi_dbm;
@@ -348,14 +407,36 @@ esp_err_t radio_set_config(const radio_config_t *cfg)
     if (cfg->drate_comp > 3) return ESP_ERR_INVALID_ARG;
     if (!s_stats.present) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    /* The AFC estimate is relative to the configured frequency: a new one starts over. */
+    if (cfg->freq_hz != s_cfg.freq_hz) afc_reset();
     s_cfg = *cfg;
     s_cfg.rxbw_hz = hw_rxbw(cfg->rxbw_hz);  /* store the bandwidth the chip actually uses */
+    int32_t lim = (int32_t)(s_cfg.rxbw_hz / 2);  /* a narrower channel clamps the overlay harder */
+    if (s_afc_applied_hz > lim) s_afc_applied_hz = lim;
+    if (s_afc_applied_hz < -lim) s_afc_applied_hz = -lim;
     esp_err_t err = apply_config();
     radio_config_t now = s_cfg;
     xSemaphoreGive(s_lock);
     ESP_LOGI(TAG, "reconfigured: %.3f MHz, %u chip/s, RxBw %u Hz, drate comp %u", now.freq_hz / 1e6,
              (unsigned)now.bitrate, (unsigned)now.rxbw_hz, now.drate_comp);
     return err;
+}
+
+void radio_get_afc(radio_afc_t *out)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    *out = (radio_afc_t){.on = s_afc_on, .est_hz = (int32_t)(s_afc_est_hz + (s_afc_est_hz < 0 ? -0.5f : 0.5f)),
+                         .applied_hz = s_afc_applied_hz, .pkts = s_afc_pkts};
+    xSemaphoreGive(s_lock);
+}
+
+void radio_set_afc(bool on)
+{
+    if (!radio_hw_caps.freq_offset) on = false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_afc_on = on;
+    if (s_stats.present) afc_retune();
+    xSemaphoreGive(s_lock);
 }
 
 int radio_get_events(radio_event_t *out, int max, uint32_t *total)

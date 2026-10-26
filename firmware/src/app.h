@@ -14,6 +14,8 @@ void app_on_packet(const tpms_ford_t *pkt, const radio_rx_info_t *rx, uint32_t m
 
 /* Settings changes from the CLI and web UI: apply, then save to NVS. */
 esp_err_t app_set_radio(const radio_config_t *cfg);
+/* Automatic frequency correction on/off (saved; the offset itself is not). */
+void app_set_afc(bool on);
 void app_set_display(const display_settings_t *set);
 /* Reboot into the ROM download mode so esptool can flash without a reset
  * circuit (ESP32-C3; the classic ESP32 can't, see app_can_...). */

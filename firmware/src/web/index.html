@@ -176,6 +176,8 @@ dialog[open] { animation: modal-in .18s ease-out; }
 .field input[type=range]::-moz-range-track { height: 8px; border-radius: 2px; background: repeating-linear-gradient(90deg, #3a0c08 0 6px, #000 6px 8px); }
 .field input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 22px; margin-top: -7px; border-radius: 2px; background: var(--red); box-shadow: 0 0 10px var(--red); border: none; }
 .field input[type=range]::-moz-range-thumb { width: 14px; height: 22px; border-radius: 2px; background: var(--red); box-shadow: 0 0 10px var(--red); border: none; }
+.field .afc { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--dim); letter-spacing: .08em; }
+.field input[type=checkbox] { width: 18px; height: 18px; margin: 0; accent-color: var(--amber); }
 .m-note { font-size: 10px; letter-spacing: .12em; color: var(--dim); line-height: 1.5; }
 .m-err { min-height: 14px; font-size: 11px; letter-spacing: .15em; color: var(--red); }
 .m-err.ok { color: var(--green); }
@@ -406,6 +408,7 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
     <div class="m-head"><h3>Radio Configuration</h3><small><span id="r-chip">FSK</span> receiver &middot; saved to flash</small><div class="m-scan"></div></div>
     <div class="m-body">
       <div class="field"><label for="r-freq">Frequency</label><input id="r-freq" type="number" step="0.001" required><span class="hint">MHz</span></div>
+      <div class="field" id="r-afc-row"><label for="r-afc">Auto-tune</label><span class="afc"><input id="r-afc" type="checkbox"><span id="r-afc-v">---</span></span><button class="ctl" type="button" id="r-afc-apply" title="Frequency + estimate (saved with Engage)">Apply</button></div>
       <div class="field"><label for="r-bw">Bandwidth</label><select id="r-bw"></select><span class="hint">kHz</span></div>
       <div class="field"><label for="r-sync">Sync word</label><select id="r-sync">
         <option value="5556">5556 &middot; normal polarity</option><option value="aaa9">AAA9 &middot; inverted</option>
@@ -414,7 +417,7 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
       <div class="field"><label for="r-drc">Rate tracking</label><select id="r-drc">
         <option value="0">off</option><option value="1">&plusmn;3.125 %</option><option value="2">&plusmn;6.25 %</option>
         <option value="3">&plusmn;12.5 %</option></select><span class="hint">CC1101</span></div>
-      <div class="m-note">Same settings as the <b>radio</b> CLI command. <span id="r-limits"></span> Changes apply immediately and survive reboots.</div>
+      <div class="m-note">Same settings as the <b>radio</b> CLI command. <span id="r-limits"></span> Changes apply immediately and survive reboots. <i>Auto-tune</i> averages the frequency offset of received packets and retunes 3&nbsp;s after a burst; the offset is not saved and starts again at 0 after a reboot or a new frequency. <i>Apply</i> adds it to the frequency.</div>
       <div class="m-err" id="r-err"></div>
     </div>
     <div class="m-foot">
@@ -726,7 +729,8 @@ function onStatus(m) {
   status = m;
   devNow = m.now; devNowAt = performance.now();
   if (m.rssi > peak.v || performance.now() - peak.t > 1500) { peak.v = m.rssi; peak.t = performance.now(); }
-  $("freq").textContent = (m.freq / 1e6).toFixed(3) + " MHz";
+  $("freq").textContent = (m.freq / 1e6).toFixed(3) + " MHz" + (m.afc && m.afc.on ? ` (${fmtHz(m.afc.applied)}Hz)` : "");
+  if ($("dlg-radio").open) afcPaint(m.afc);
   $("freq").classList.toggle("unlocked", m.pll === false);
   $("pll-alarm").classList.toggle("show", m.pll === false);
   $("pll-freq").textContent = (m.freq / 1e6).toFixed(3) + " MHz";
@@ -897,6 +901,16 @@ $("t-clear").addEventListener("click", () => {
 });
 
 /* radio */
+const fmtHz = hz => (hz < 0 ? "\u2212" : "+") + Math.abs(hz).toLocaleString("en-US");
+function afcPaint(a) {    /* status.afc: estimate and applied overlay (Hz), packets */
+  $("r-afc-row").hidden = !(a && a.ok);
+  if (!a || !a.ok) return;
+  $("r-afc-v").textContent = `est ${fmtHz(a.est)} Hz \u00b7 applied ${fmtHz(a.applied)} Hz \u00b7 ${a.n} pkts`;
+  $("r-afc-apply").disabled = !a.n;
+}
+$("r-afc-apply").addEventListener("click", () => {
+  if (status && status.afc) $("r-freq").value = (Math.round((status.freq + status.afc.est) / 1e3) / 1e3).toFixed(3);
+});
 function setRadio(c) {    /* freq Hz, bw Hz, sync, bitrate, drc */
   $("r-freq").value = (c.freq / 1e6).toFixed(3);
   $("r-bw").value = (c.bw / 1000).toFixed(1);
@@ -923,17 +937,20 @@ function openRadio() {
   if (!status) return;
   if (status.radio) fillRadio(status.radio);
   setRadio(status);
+  $("r-afc").checked = !!(status.afc && status.afc.on);
+  afcPaint(status.afc);
   msg("r-err", "");
   $("dlg-radio").showModal();
 }
 $("open-radio").addEventListener("click", openRadio);
 $("r-save").addEventListener("click", () => {
   if (!$("f-radio").reportValidity()) return;
-  run("r-err", () => post("/api/radio", { freq: $("r-freq").value, bw: $("r-bw").value, sync: $("r-sync").value, bitrate: $("r-bitrate").value, drc: $("r-drc").value }), $("dlg-radio"));
+  run("r-err", () => post("/api/radio", { freq: $("r-freq").value, bw: $("r-bw").value, sync: $("r-sync").value, bitrate: $("r-bitrate").value, drc: $("r-drc").value, afc: $("r-afc").checked ? 1 : 0 }), $("dlg-radio"));
 });
 $("r-defaults").addEventListener("click", () => run("r-err", async () => {
   await post("/api/radio", { defaults: 1 });
   if (status && status.radio) setRadio(status.radio.def);
+  $("r-afc").checked = false;
 }));
 
 /* display */

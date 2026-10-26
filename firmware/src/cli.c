@@ -36,6 +36,14 @@ static void fmt_uptime(char *buf, size_t len, uint32_t ms)
 
 /* ------------------------------------------------------------ metrics -- */
 
+static void print_afc(const char *prefix)
+{
+    radio_afc_t a;
+    radio_get_afc(&a);
+    printf("%s%s, est %+d Hz over %u pkts, applied %+d Hz\n", prefix, a.on ? "on" : "off", (int)a.est_hz,
+           (unsigned)a.pkts, (int)a.applied_hz);
+}
+
 static int cmd_metrics(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "reset")) {
@@ -65,6 +73,7 @@ static int cmd_metrics(int argc, char **argv)
     else printf("wifi          %s, %d dBm, http://%s/ (%s.local)\n", ns.ip, ns.rssi_dbm, ns.ip, ns.hostname);
     printf("--- radio (%s) ---\n", rs.present ? rs.chip : "NOT FOUND");
     printf("frequency     %.3f MHz\n", rc.freq_hz / 1e6);
+    if (radio_caps()->freq_offset) print_afc("afc           ");
     if (rs.pll_locked) printf("pll           locked (%u checks unlocked since reset)\n", (unsigned)rs.pll_unlocked_polls);
     else printf("pll           NOT LOCKED: receiver is not tuned and hears nothing (%u checks unlocked)\n",
                 (unsigned)rs.pll_unlocked_polls);
@@ -238,6 +247,7 @@ static int cmd_radio(int argc, char **argv)
     if (argc == 2 && !strcmp(argv[1], "defaults")) {
         radio_default_config(&c);
         esp_err_t err = app_set_radio(&c);
+        if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) app_set_afc(false);
         printf("radio settings reset to defaults\n");
         if (err == ESP_ERR_INVALID_STATE) pll_warning(c.freq_hz);
         return err == ESP_OK ? 0 : 1;
@@ -245,14 +255,22 @@ static int cmd_radio(int argc, char **argv)
     if (argc == 1) {
         printf("freq %.3f MHz, bitrate %u, drc %u (%s), bw %u Hz, sync %s\n", c.freq_hz / 1e6, (unsigned)c.bitrate,
                c.drate_comp, radio_drate_comp_str(c.drate_comp), (unsigned)c.rxbw_hz, sync_name(c.sync));
+        if (radio_caps()->freq_offset) print_afc("afc ");
         return 0;
     }
+    int afc = -1;
     for (int i = 1; i + 1 < argc; i += 2) {
         const char *k = argv[i], *v = argv[i + 1];
         if (!strcmp(k, "freq")) c.freq_hz = (uint32_t)(atof(v) * 1e6 + 0.5);
         else if (!strcmp(k, "bw")) c.rxbw_hz = (uint32_t)(atof(v) * 1e3 + 0.5);
         else if (!strcmp(k, "bitrate")) c.bitrate = (uint32_t)atoi(v);
         else if (!strcmp(k, "drc")) c.drate_comp = (uint8_t)atoi(v);  /* > 3 is rejected */
+        else if (!strcmp(k, "afc")) {
+            if (!strcmp(v, "on") || !strcmp(v, "1")) afc = 1;
+            else if (!strcmp(v, "off") || !strcmp(v, "0")) afc = 0;
+            else { printf("afc must be on or off\n"); return 1; }
+            if (afc && !radio_caps()->freq_offset) { printf("the %s measures no frequency offset\n", radio_caps()->name); return 1; }
+        }
         else if (!strcmp(k, "sync")) {
             if (!strcmp(v, "5556")) c.sync = RADIO_SYNC_5556;
             else if (!strcmp(v, "aaa9")) c.sync = RADIO_SYNC_AAA9;
@@ -268,6 +286,7 @@ static int cmd_radio(int argc, char **argv)
         return 1;
     }
     esp_err_t err = app_set_radio(&c);
+    if (afc >= 0 && (err == ESP_OK || err == ESP_ERR_INVALID_STATE)) app_set_afc(afc);
     if (err == ESP_ERR_INVALID_STATE) {
         pll_warning(c.freq_hz);
         return 1;
@@ -574,8 +593,10 @@ esp_err_t cli_start(void)
         {.command = "wifi", .help = "Wi-Fi, web UI, time and MQTT status", .func = cmd_wifi},
         {.command = "radio",
          .help = "Show or set radio (saved): radio freq 315.0 bw 83.3 sync 5556 bitrate 19231 drc 1 | defaults\n"
-                 "  drc: data rate offset compensation 0 off, 1 +/-3.125%, 2 +/-6.25%, 3 +/-12.5% (CC1101)",
-         .hint = "[freq MHz] [bw kHz] [sync 5556|aaa9|5555] [bitrate cps] [drc 0-3] | defaults", .func = cmd_radio},
+                 "  drc: data rate offset compensation 0 off, 1 +/-3.125%, 2 +/-6.25%, 3 +/-12.5% (CC1101)\n"
+                 "  afc: tune in the averaged packet frequency offset between bursts (CC1101; the offset starts at 0 at boot)",
+         .hint = "[freq MHz] [bw kHz] [sync 5556|aaa9|5555] [bitrate cps] [drc 0-3] [afc on|off] | defaults",
+         .func = cmd_radio},
         {.command = "rflog", .help = "RF energy events and strong raw payloads (reception diagnostics)",
          .hint = "[clear]", .func = cmd_rflog},
         {.command = "regs", .help = "Dump radio registers and status (CC1101) or status, errors and counters (LR1121)",

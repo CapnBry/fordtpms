@@ -129,6 +129,7 @@ const radio_caps_t radio_hw_caps = {
     .freq_note = "specified 300-348, 387-464 and 779-928 MHz",
     .bitrate_min = 600,
     .bitrate_max = 500000,
+    .freq_offset = true,
     .tx = true,
     .tx_default_dbm = -10,
     .tx_note = "pa or rfo -30..10 dBm (single PA; -30/-20/-15/-10/0/5/7/10, rounded down)",

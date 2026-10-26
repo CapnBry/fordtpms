@@ -74,6 +74,7 @@ typedef struct {
     uint32_t freq_min_hz, freq_max_hz;  /* accepted by radio_set_config */
     const char *freq_note;    /* where the synthesizer is specified to lock */
     uint32_t bitrate_min, bitrate_max;  /* chip rates (chips/s) accepted by radio_set_config */
+    bool     freq_offset;     /* reports radio_rx_info_t.freq_off_hz: automatic frequency correction works */
     bool     tx;              /* radio_tx_ford is supported */
     int8_t   tx_default_dbm;  /* `tx` CLI power when none is given (high-power path) */
     const char *tx_note;      /* power ranges of the two PA paths */
@@ -136,6 +137,30 @@ void radio_get_config(radio_config_t *out);
 esp_err_t radio_set_config(const radio_config_t *cfg);
 /* Defaults, with the bandwidth snapped to what the fitted chip supports. */
 void radio_default_config(radio_config_t *out);
+
+/*
+ * Automatic frequency correction. Every decoded packet with a measured offset
+ * moves est_hz 1/10 of the way to the carrier's offset from the configured
+ * frequency (applied_hz + the packet's freq_off_hz). With AFC on, est_hz is
+ * tuned in as an overlay on the configured frequency once no packet has been
+ * decoded for RADIO_AFC_QUIET_MS (never during a burst), if it moved by at
+ * least RADIO_AFC_DEADBAND_HZ, clamped to +/- half the channel bandwidth. The
+ * overlay and estimate live in RAM: they start at 0 at boot and are reset
+ * whenever the configured frequency changes.
+ */
+#define RADIO_AFC_QUIET_MS    3000  /* = SENSORS_BURST_GAP_MS */
+#define RADIO_AFC_DEADBAND_HZ 1000
+
+typedef struct {
+    bool     on;
+    int32_t  est_hz;          /* estimated carrier offset from the configured frequency */
+    int32_t  applied_hz;      /* overlay tuned in now: the radio is on freq_hz + applied_hz */
+    uint32_t pkts;            /* packets in est_hz since boot / the last reset */
+} radio_afc_t;
+
+void radio_get_afc(radio_afc_t *out);
+/* Turning AFC on tunes in est_hz now (deadband and clamp apply); off goes back to freq_hz. */
+void radio_set_afc(bool on);
 
 /* Noise floor history for the idle screen, one sample per ~250 ms. */
 int radio_rssi_history(int8_t *out, int max);
