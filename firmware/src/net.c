@@ -22,6 +22,7 @@ static esp_netif_t *s_netif;
 static volatile bool s_connected;
 static uint32_t s_reconnects;
 static bool s_services_started;
+static bool s_powersave, s_started;
 
 #define RETRY_MIN_MS 1000
 #define RETRY_MAX_MS 30000
@@ -105,10 +106,22 @@ esp_err_t net_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
-    /* Keep the radio awake: modem sleep misses traffic on a weak link. */
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    s_started = true;
+    net_set_powersave(s_powersave);
     ESP_LOGI(TAG, "connecting to \"%s\"", WIFI_SSID);
     return ESP_OK;
+}
+
+void net_set_powersave(bool on)
+{
+    s_powersave = on;
+    /* Off by default: modem sleep misses traffic on a weak link. */
+    if (s_started) esp_wifi_set_ps(on ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE);
+}
+
+bool net_powersave(void)
+{
+    return s_powersave;
 }
 
 void net_get_status(net_status_t *out)

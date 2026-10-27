@@ -88,6 +88,13 @@ void app_set_afc(bool on)
     settings_save("afc", &v, sizeof(v));
 }
 
+void app_set_wifi_ps(bool on)
+{
+    net_set_powersave(on);
+    uint8_t v = on;
+    settings_save("wifi_ps", &v, sizeof(v));
+}
+
 void app_set_display(const display_settings_t *set)
 {
     display_set_settings(set);
@@ -175,11 +182,14 @@ void app_main(void)
         radio_default_config(&rc);
         radio_set_config(&rc);
     }
-    uint8_t afc;
-    if (settings_load("afc", &afc, sizeof(afc))) radio_set_afc(afc);
+    uint8_t afc = 1;  /* on unless turned off (a no-op on chips that measure no offset) */
+    settings_load("afc", &afc, sizeof(afc));
+    radio_set_afc(afc);
     display_settings_t ds;
     if (settings_load("display", &ds, sizeof(ds))) display_set_settings(&ds);
     display_init();
+    uint8_t wifi_ps;
+    if (settings_load("wifi_ps", &wifi_ps, sizeof(wifi_ps))) net_set_powersave(wifi_ps);
     if (net_init() != ESP_OK) ESP_LOGE(TAG, "Wi-Fi init failed");
     led_start();
     ESP_ERROR_CHECK(cli_start());

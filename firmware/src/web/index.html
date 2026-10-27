@@ -417,7 +417,8 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
       <div class="field"><label for="r-drc">Rate tracking</label><select id="r-drc">
         <option value="0">off</option><option value="1">&plusmn;3.125 %</option><option value="2">&plusmn;6.25 %</option>
         <option value="3">&plusmn;12.5 %</option></select><span class="hint">CC1101</span></div>
-      <div class="m-note">Same settings as the <b>radio</b> CLI command. <span id="r-limits"></span> Changes apply immediately and survive reboots. <i>Auto-tune</i> averages the frequency offset of received packets and retunes 3&nbsp;s after a burst; the offset is not saved and starts again at 0 after a reboot or a new frequency. <i>Apply</i> adds it to the frequency.</div>
+      <div class="field"><label for="r-wifi-ps">Wi-Fi sleep</label><span class="afc"><input id="r-wifi-ps" type="checkbox"><span>modem power saving</span></span></div>
+      <div class="m-note">Same settings as the <b>radio</b> CLI command. <span id="r-limits"></span> Changes apply immediately and survive reboots. <i>Auto-tune</i> averages the frequency offset of received packets and retunes 3&nbsp;s after a burst; the offset is not saved and starts again at 0 after a reboot or a new frequency. <i>Apply</i> adds it to the frequency. <i>Wi-Fi sleep</i> saves power but can make the web UI and MQTT slower or drop on a weak link; <i>Defaults</i> leaves it as is.</div>
       <div class="m-err" id="r-err"></div>
     </div>
     <div class="m-foot">
@@ -938,6 +939,7 @@ function openRadio() {
   if (status.radio) fillRadio(status.radio);
   setRadio(status);
   $("r-afc").checked = !!(status.afc && status.afc.on);
+  $("r-wifi-ps").checked = !!status.wifi_ps;
   afcPaint(status.afc);
   msg("r-err", "");
   $("dlg-radio").showModal();
@@ -945,12 +947,12 @@ function openRadio() {
 $("open-radio").addEventListener("click", openRadio);
 $("r-save").addEventListener("click", () => {
   if (!$("f-radio").reportValidity()) return;
-  run("r-err", () => post("/api/radio", { freq: $("r-freq").value, bw: $("r-bw").value, sync: $("r-sync").value, bitrate: $("r-bitrate").value, drc: $("r-drc").value, afc: $("r-afc").checked ? 1 : 0 }), $("dlg-radio"));
+  run("r-err", () => post("/api/radio", { freq: $("r-freq").value, bw: $("r-bw").value, sync: $("r-sync").value, bitrate: $("r-bitrate").value, drc: $("r-drc").value, afc: $("r-afc").checked ? 1 : 0, wifi_ps: $("r-wifi-ps").checked ? 1 : 0 }), $("dlg-radio"));
 });
 $("r-defaults").addEventListener("click", () => run("r-err", async () => {
   await post("/api/radio", { defaults: 1 });
   if (status && status.radio) setRadio(status.radio.def);
-  $("r-afc").checked = false;
+  $("r-afc").checked = !!(status && status.afc && status.afc.ok);
 }));
 
 /* display */

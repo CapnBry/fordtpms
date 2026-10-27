@@ -166,6 +166,17 @@ static int cmd_sensors(int argc, char **argv)
 
 static int cmd_wifi(int argc, char **argv)
 {
+    if (argc == 3 && !strcmp(argv[1], "sleep")) {
+        if (!strcmp(argv[2], "on") || !strcmp(argv[2], "1")) app_set_wifi_ps(true);
+        else if (!strcmp(argv[2], "off") || !strcmp(argv[2], "0")) app_set_wifi_ps(false);
+        else { printf("sleep must be on or off\n"); return 1; }
+        printf("wifi sleep %s (saved)\n", net_powersave() ? "on" : "off");
+        return 0;
+    }
+    if (argc > 1) {
+        printf("usage: wifi [sleep on|off]\n");
+        return 1;
+    }
     net_status_t ns;
     ha_mqtt_status_t ms;
     net_get_status(&ns);
@@ -183,6 +194,7 @@ static int cmd_wifi(int argc, char **argv)
         printf("web ui        http://%s/  (%d live clients)\n", ns.ip, web_client_count());
     }
     printf("reconnects    %u\n", (unsigned)ns.reconnects);
+    printf("sleep         %s\n", net_powersave() ? "on (modem power saving)" : "off");
     char t[24];
     net_fmt_time(t, sizeof(t), net_wall_time(0));
     printf("time          %s\n", t[0] ? t : "not synced");
@@ -247,7 +259,7 @@ static int cmd_radio(int argc, char **argv)
     if (argc == 2 && !strcmp(argv[1], "defaults")) {
         radio_default_config(&c);
         esp_err_t err = app_set_radio(&c);
-        if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) app_set_afc(false);
+        if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) app_set_afc(true);
         printf("radio settings reset to defaults\n");
         if (err == ESP_ERR_INVALID_STATE) pll_warning(c.freq_hz);
         return err == ESP_OK ? 0 : 1;
@@ -590,11 +602,12 @@ esp_err_t cli_start(void)
          .hint = "[clear]", .func = cmd_sensors},
         {.command = "tires", .help = "Show or assign sensor IDs to wheels (only assigned IDs go to MQTT)",
          .hint = "[fl|fr|rl|rr <id|clear>]", .func = cmd_tires},
-        {.command = "wifi", .help = "Wi-Fi, web UI, time and MQTT status", .func = cmd_wifi},
+        {.command = "wifi", .help = "Wi-Fi, web UI, time and MQTT status. 'wifi sleep on|off' sets modem power saving (saved)",
+         .hint = "[sleep on|off]", .func = cmd_wifi},
         {.command = "radio",
          .help = "Show or set radio (saved): radio freq 315.0 bw 83.3 sync 5556 bitrate 19231 drc 1 | defaults\n"
                  "  drc: data rate offset compensation 0 off, 1 +/-3.125%, 2 +/-6.25%, 3 +/-12.5% (CC1101)\n"
-                 "  afc: tune in the averaged packet frequency offset between bursts (CC1101; the offset starts at 0 at boot)",
+                 "  afc: tune in the averaged packet frequency offset between bursts (CC1101, default on; the offset starts at 0 at boot)",
          .hint = "[freq MHz] [bw kHz] [sync 5556|aaa9|5555] [bitrate cps] [drc 0-3] [afc on|off] | defaults",
          .func = cmd_radio},
         {.command = "rflog", .help = "RF energy events and strong raw payloads (reception diagnostics)",

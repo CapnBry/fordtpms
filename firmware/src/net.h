@@ -22,6 +22,9 @@ typedef struct {
 } net_status_t;
 
 esp_err_t net_init(void);
+/* Wi-Fi modem sleep (WIFI_PS_MIN_MODEM) on/off; may be called before net_init. */
+void net_set_powersave(bool on);
+bool net_powersave(void);
 void net_get_status(net_status_t *out);
 /* Cheap checks for frequent callers (status LED). */
 bool net_enabled(void);
