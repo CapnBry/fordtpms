@@ -542,7 +542,7 @@ function fmtUp(ms) {
   return d ? `${d}d ${pad(Math.floor(s / 3600) % 24)}:${pad(Math.floor(s / 60) % 60)}` : fmtHms(ms);
 }
 const kpa = psi => Math.round(psi * 6.894757);
-const psiStr = p => p >= 100 ? p.toFixed(0) : p.toFixed(1);
+const psiStr = p => p >= 100 ? p.toFixed(0) : p.toFixed(2);
 
 /* ------------------------------------------------------------ state */
 let status = null, sensors = null;
@@ -669,7 +669,7 @@ function renderTires() {
     if (!id) {
       el.classList.remove("moving", "learn", "flash");
       setText(el.querySelector(".id"), "UNASSIGNED");
-      seg(el.querySelector(".p"), "--.-", 4);
+      seg(el.querySelector(".p"), "--.--", 4);
       setHtml(el.querySelector(".meta"), "TAP TO ASSIGN");
       wheel.style.fill = "#ff241411";
       continue;
@@ -677,7 +677,7 @@ function renderTires() {
     setText(el.querySelector(".id"), id.toUpperCase());
     if (!s) {
       el.classList.remove("moving", "learn", "flash");
-      seg(el.querySelector(".p"), "--.-", 4);
+      seg(el.querySelector(".p"), "--.--", 4);
       setHtml(el.querySelector(".meta"), "NOT HEARD");
       wheel.style.fill = "#ff241433";
       continue;
