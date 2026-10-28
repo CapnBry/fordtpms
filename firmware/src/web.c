@@ -196,19 +196,36 @@ static void json_sensors(jbuf_t *j)
 
 /* ---------------------------------------------------------- handlers --- */
 
+/* Embedded pages change only with the firmware, so the ELF hash is their ETag: a browser
+ * revalidates (no-cache) and gets a bodiless 304 until the next OTA. */
+static esp_err_t send_page(httpd_req_t *req, const char *start, const char *end)
+{
+    static char etag[11];
+    if (!etag[0]) {
+        char elf[9];
+        esp_app_get_elf_sha256(elf, sizeof(elf));
+        snprintf(etag, sizeof(etag), "\"%s\"", elf);
+    }
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_hdr(req, "ETag", etag);
+    char inm[64];
+    if (httpd_req_get_hdr_value_str(req, "If-None-Match", inm, sizeof(inm)) == ESP_OK && strstr(inm, etag)) {
+        httpd_resp_set_status(req, "304 Not Modified");
+        return httpd_resp_send(req, NULL, 0);
+    }
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    /* EMBED_TXTFILES appends a NUL terminator. */
+    return httpd_resp_send(req, start, end - start - 1);
+}
+
 static esp_err_t h_index(httpd_req_t *req)
 {
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    /* EMBED_TXTFILES appends a NUL terminator. */
-    return httpd_resp_send(req, index_html_start, index_html_end - index_html_start - 1);
+    return send_page(req, index_html_start, index_html_end);
 }
 
 static esp_err_t h_oled(httpd_req_t *req)
 {
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    return httpd_resp_send(req, oled_html_start, oled_html_end - oled_html_start - 1);
+    return send_page(req, oled_html_start, oled_html_end);
 }
 
 static esp_err_t h_state(httpd_req_t *req)
