@@ -33,3 +33,9 @@ CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT=y
 # Smaller image: optimize for size, assert() without file/condition text.
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+
+# TCP segments of 536 bytes (576-byte IP packets), the size of Arduino's
+# "lwIP v2 Lower Memory" variant, instead of 1440: smaller frames get through
+# a flaky link more often, and a lost one costs less to resend. The buffers
+# stay at their defaults, 5760 bytes, or about 10 segments in flight.
+CONFIG_LWIP_TCP_MSS=536
