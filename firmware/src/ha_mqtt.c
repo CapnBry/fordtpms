@@ -83,32 +83,30 @@ static void publish_state(const sensor_entry_t *e)
 
 /*
  * One state message per burst, sent once the burst has ended so `rssi` is the
- * best of its repeats. A burst that ends while disconnected is not queued;
- * the reconnect republishes the latest readings anyway.
+ * best of its repeats. While disconnected nothing is taken, so a burst that
+ * ends then stays unpublished and goes out on the first check after reconnect.
  */
 static void burst_check(void *arg)
 {
+    if (!s_connected) return;
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     sensor_entry_t e;
     while (sensors_take_finished(now, &e)) {
         /* Only sensors the user assigned to a wheel are published. */
-        if (!s_connected || tires_find(e.pkt.id) < 0) continue;
+        if (tires_find(e.pkt.id) < 0) continue;
         xSemaphoreTake(s_lock, portMAX_DELAY);
         publish_state(&e);
         xSemaphoreGive(s_lock);
     }
 }
 
-void ha_mqtt_tires_changed(void)
+void ha_mqtt_tires_changed(uint32_t new_id)
 {
     if (!s_client || !s_connected) return;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    for (int pos = 0; pos < TIRE_COUNT; pos++) {
-        uint32_t id = tires_get(pos);
-        publish_discovery(pos, id);
-        sensor_entry_t e;
-        if (id != TIRE_NONE && sensors_get(id, &e)) publish_state(&e);
-    }
+    for (int pos = 0; pos < TIRE_COUNT; pos++) publish_discovery(pos, tires_get(pos));
+    sensor_entry_t e;
+    if (new_id != TIRE_NONE && sensors_get(new_id, &e)) publish_state(&e);
     xSemaphoreGive(s_lock);
 }
 
@@ -120,8 +118,9 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_connected = true;
         s_connects++;
         publish(AVAIL_TOPIC, "online", true);
-        /* Re-announce discovery + latest readings (also covers a broker restart). */
-        ha_mqtt_tires_changed();
+        /* Re-announce discovery (also covers a broker restart). Readings are
+         * retained; only ones never sent go out, via burst_check(). */
+        ha_mqtt_tires_changed(TIRE_NONE);
         break;
     }
     case MQTT_EVENT_DISCONNECTED:

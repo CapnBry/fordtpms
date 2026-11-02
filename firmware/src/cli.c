@@ -87,6 +87,9 @@ static int cmd_metrics(int argc, char **argv)
     printf("err checksum  %u\n", (unsigned)rs.err_checksum);
     printf("err flags     %u\n", (unsigned)rs.err_flags);
     printf("fifo overrun  %u\n", (unsigned)rs.fifo_overruns);
+    printf("early aborts  %u (decoded right after: %u)\n", (unsigned)rs.rx_aborts, (unsigned)rs.abort_decodes);
+    printf("status reads  %u (reread: %u, unsettled: %u)\n", (unsigned)rs.status_reads, (unsigned)rs.status_rereads,
+           (unsigned)rs.status_unsettled);
     printf("irq pay/sync  %u / %u (polled %u)\n", (unsigned)rs.irq_payload, (unsigned)rs.irq_sync,
            (unsigned)rs.polled_events);
     printf("last rssi     %d dBm\n", rs.last_rssi_dbm);
@@ -410,7 +413,25 @@ static int cmd_rflog(int argc, char **argv)
         printf("%-19s %4d dBm (noise %d) %-10s %s%s\n", when, cap[i].rssi_dbm, cap[i].noise_dbm,
                tpms_ford_status_str((tpms_ford_status_t)cap[i].status), hex, q);
     }
-    printf("(also at http://<ip>/api/rflog)\n");
+    static radio_capture_t fails[RADIO_FAILS];
+    uint32_t fail_total;
+    int nf = radio_get_fails(fails, RADIO_FAILS, &fail_total);
+    printf("\nKept failures (likely sensor packets: see radio.h), %u since boot, last %d:\n", (unsigned)fail_total, nf);
+    for (int i = 0; i < nf; i++) {
+        char hex[2 * RADIO_CAPTURE_MAX + 1] = "";
+        for (int k = 0; k < fails[i].len; k++) sprintf(hex + 2 * k, "%02x", fails[i].data[k]);
+        fmt_when(when, sizeof(when), fails[i].ms);
+        int np;
+        uint64_t bad = radio_capture_bad(&fails[i], &np);
+        uint32_t id;
+        char ids[12] = "--------";
+        if (radio_capture_id(&fails[i], &id)) snprintf(ids, sizeof(ids), "%08x", (unsigned)id);
+        printf("%-19s %4d dBm (noise %d) %-10s id %s, %d/%d bad%s%s %s\n", when, fails[i].rssi_dbm,
+               fails[i].noise_dbm, tpms_ford_status_str((tpms_ford_status_t)fails[i].status), ids,
+               __builtin_popcountll(bad), np, fails[i].flags & RADIO_CAP_ABORTED ? ", aborted" : "",
+               fails[i].flags & RADIO_CAP_RESTARTED ? ", after abort" : "", hex);
+    }
+    printf("(also at http://<ip>/api/rflog and /api/pkts)\n");
     return 0;
 }
 

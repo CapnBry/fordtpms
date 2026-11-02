@@ -13,8 +13,8 @@
 #   FORCE=1 tools/tpms-watch.sh                  # run Claude after perfect rounds too
 #
 # Each round goes to tools/watch-runs/<timestamp>/: per sensor <id>.mqtt.json
-# (the rtl_433 reading) and <id>.state.json / <id>.rflog.json (the firmware's
-# /api/state and /api/rflog, SETTLE s later), summary.txt, and Claude's output
+# (the rtl_433 reading) and <id>.state.json / <id>.rflog.json / <id>.pkts.json
+# (the firmware's /api/state, /api/rflog and /api/pkts?id=, SETTLE s later), summary.txt, and Claude's output
 # (claude.md, claude.json, firmware.diff when it flashed). Claude keeps a
 # running log of hypotheses and attempts in tools/watch-runs/NOTES.md.
 
@@ -84,6 +84,7 @@ on_message() {  # json
     sleep "$SETTLE"
     curl -s -m 10 "$DEVICE/api/state" > "$round_dir/$id.state.json" || echo '{}' > "$round_dir/$id.state.json"
     curl -s -m 10 "$DEVICE/api/rflog" > "$round_dir/$id.rflog.json" || echo '{}' > "$round_dir/$id.rflog.json"
+    curl -s -m 10 "$DEVICE/api/pkts?id=$id" > "$round_dir/$id.pkts.json" || echo '{}' > "$round_dir/$id.pkts.json"
     local line
     line=$(sensor_line "$id" "$round_dir/$id.state.json")
     echo "$line" >> "$round_dir/sensors.txt"
@@ -165,16 +166,20 @@ The board is an ESP32 DevKit with a CC1101 at 315 MHz (PlatformIO env esp32-cc11
 garage and reachable only over Wi-Fi at $DEVICE. firmware/README.md describes it; its
 "Troubleshooting reception" section explains the diagnostics: per sensor burst_pkts (of 4 in
 the latest burst), foff (Hz, the CC1101's frequency offset estimate at the sync word) latest /
-mean / min / max, lqi (0-127, lower = cleaner); near_miss (Manchester failures with 1-4 bad
-pairs: real packets with a few damaged chips) and bad_bit_hist in /api/rflog (damage at the
-start points at demodulator settling, spread out at SNR); strong payload captures with foff,
-lqi, bad and bad_at; drc (data rate offset tracking, 0 off .. 3 +/-12.5 %).
+mean / min / max, lqi (0-127, lower = cleaner); strong payload captures with foff, lqi, bad
+and bad_at; drc (data rate offset tracking, 0 off .. 3 +/-12.5 %). Since 2026-11-01 the CC1101
+aborts a payload at its first bad Manchester pair and goes straight back to sync search
+(aborts / abort_dec in /api/state): near_miss and bad_bit_hist no longer grow. Instead the
+kept failures (<id>.pkts.json "f" rows) show each likely sensor packet that failed, with its
+ID when readable and the first bad pair; the "p" rows are every decoded packet of the sensor.
 
 Evidence for this round is in $dir:
   <id>.mqtt.json   the rtl_433 reading (its "time" is local wall time)
   <id>.state.json  firmware /api/state ${SETTLE}s after that reading ("now" and sensor "last" are
                    ms since boot; status.time is wall time; status.fw identifies the build)
   <id>.rflog.json  firmware /api/rflog at the same moment
+  <id>.pkts.json   firmware /api/pkts?id=<id>: this sensor's packet log and kept failures
+                   (row layout above h_pkts in firmware/src/web.c)
   summary.txt      the scores above
 Earlier rounds are sibling directories of $dir. Read $NOTES first: it is the running log of
 what has been tried, and you must append to it.

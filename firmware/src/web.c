@@ -98,13 +98,13 @@ static void json_status(jbuf_t *j, bool with_sensors)
     radio_get_config(&rc);
     net_get_status(&ns);
     ha_mqtt_get_status(&ms);
-    int8_t hist[80];
+    int8_t hist[60];                   /* 30 s at 500 ms */
     int nh = radio_rssi_history(hist, sizeof(hist));
     char tbuf[24];
     net_fmt_time(tbuf, sizeof(tbuf), net_wall_time(0));
-    /* "rssi": peak of the RF samples (250 ms each) since the previous push */
+    /* "rssi": peak of the RF samples (500 ms each) since the previous push */
     int peak = nh ? hist[nh - 1] : rs.noise_dbm;
-    for (int i = nh - 2; i >= 0 && i >= nh - WEB_PUSH_MS / 250; i--)
+    for (int i = nh - 2; i >= 0 && i >= nh - WEB_PUSH_MS / 500; i--)
         if (hist[i] > peak) peak = hist[i];
     jp(j, "{\"t\":\"status\",\"now\":%u,\"time\":\"%s\",\"freq\":%u,\"bw\":%u,\"noise\":%d,\"rssi\":%d,",
        (unsigned)now_ms(), tbuf, (unsigned)rc.freq_hz, (unsigned)rc.rxbw_hz, rs.noise_dbm, peak);
@@ -126,10 +126,12 @@ static void json_status(jbuf_t *j, bool with_sensors)
     jp(j, "\"hist\":[");
     for (int i = 0; i < nh; i++) jp(j, "%s%d", i ? "," : "", hist[i]);
     jp(j, "],\"syncs\":%u,\"payloads\":%u,\"decoded\":%u,\"err_manchester\":%u,\"err_checksum\":%u,"
-          "\"err_flags\":%u,\"near_miss\":%u,\"overruns\":%u,\"last_rssi\":%d,\"best_rssi\":%d,\"worst_rssi\":%d,\"last_decode\":%u,",
+          "\"err_flags\":%u,\"near_miss\":%u,\"overruns\":%u,\"aborts\":%u,\"abort_dec\":%u,"
+          "\"st_reads\":%u,\"st_reread\":%u,\"st_unsettled\":%u,\"last_rssi\":%d,\"best_rssi\":%d,\"worst_rssi\":%d,\"last_decode\":%u,",
        (unsigned)rs.syncs, (unsigned)rs.payloads, (unsigned)rs.decoded, (unsigned)rs.err_manchester,
        (unsigned)rs.err_checksum, (unsigned)rs.err_flags, (unsigned)rs.near_miss, (unsigned)rs.fifo_overruns,
-       rs.last_rssi_dbm,
+       (unsigned)rs.rx_aborts, (unsigned)rs.abort_decodes, (unsigned)rs.status_reads,
+       (unsigned)rs.status_rereads, (unsigned)rs.status_unsettled, rs.last_rssi_dbm,
        rs.best_rssi_dbm, rs.worst_rssi_dbm, (unsigned)rs.last_decode_ms);
     display_settings_t dset;
     display_status_t dst;
@@ -273,15 +275,22 @@ static esp_err_t h_rflog(httpd_req_t *req)
     radio_config_t rc;
     radio_get_stats(&rs);
     radio_get_config(&rc);
+    uint32_t pkts_total, fails_total;
+    radio_get_packets(NULL, 0, &pkts_total);
+    radio_get_fails(NULL, 0, &fails_total);
     char wall[24];
     net_fmt_time(wall, sizeof(wall), net_wall_time(0));
     jp(&j, "{\"now\":%u,\"time\":\"%s\",\"noise\":%d,\"syncs\":%u,\"payloads\":%u,\"decoded\":%u,"
            "\"freq\":%u,\"pll\":%s,\"bw\":%u,\"bitrate\":%u,\"drc\":%u,\"sync\":\"%s\",\"event_db\":%d,"
-           "\"capture_db\":%d,\"near_miss\":%u,\"near_miss_bad\":%d,\"bad_bit_hist\":[",
+           "\"capture_db\":%d,\"near_miss\":%u,\"near_miss_bad\":%d,\"aborts\":%u,\"abort_dec\":%u,"
+           "\"st_reads\":%u,\"st_reread\":%u,\"st_unsettled\":%u,"
+           "\"pkts_total\":%u,\"fails_total\":%u,\"bad_bit_hist\":[",
        (unsigned)now_ms(), wall, rs.noise_dbm, (unsigned)rs.syncs, (unsigned)rs.payloads, (unsigned)rs.decoded,
        (unsigned)rc.freq_hz, rs.pll_locked ? "true" : "false", (unsigned)rc.rxbw_hz, (unsigned)rc.bitrate,
        rc.drate_comp, rc.sync == RADIO_SYNC_AAA9 ? "aaa9" : rc.sync == RADIO_SYNC_5555 ? "5555" : "5556",
-       RADIO_EVENT_DB, RADIO_CAPTURE_DB, (unsigned)rs.near_miss, RADIO_NEAR_MISS_BAD);
+       RADIO_EVENT_DB, RADIO_CAPTURE_DB, (unsigned)rs.near_miss, RADIO_NEAR_MISS_BAD, (unsigned)rs.rx_aborts,
+       (unsigned)rs.abort_decodes, (unsigned)rs.status_reads, (unsigned)rs.status_rereads,
+       (unsigned)rs.status_unsettled, (unsigned)pkts_total, (unsigned)fails_total);
     for (int i = 0; i < TPMS_FORD_PAYLOAD_BITS; i++) jp(&j, "%s%u", i ? "," : "", rs.bad_bit_hist[i]);
     jp(&j, "],");
     json_afc(&j);
@@ -299,11 +308,15 @@ static esp_err_t h_rflog(httpd_req_t *req)
            i ? "," : "", (unsigned)cap[i].ms, wall, cap[i].rssi_dbm, cap[i].noise_dbm,
            tpms_ford_status_str((tpms_ford_status_t)cap[i].status), hex);
         if (cap[i].quality) jp(&j, ",\"foff\":%d,\"lqi\":%u", (int)cap[i].freq_off_hz, cap[i].lqi);
+        if (cap[i].flags & (RADIO_CAP_ABORTED | RADIO_CAP_RESTARTED))
+            jp(&j, ",\"fl\":%u", cap[i].flags & (RADIO_CAP_ABORTED | RADIO_CAP_RESTARTED));
         /* Damaged bit positions, listed when few: a real packet with a few bad chips. */
         if (rc.sync != RADIO_SYNC_5555) {
-            uint64_t bad = tpms_ford_bad_pairs(cap[i].data, cap[i].len * 8, 0);
+            int np;
+            uint64_t bad = radio_capture_bad(&cap[i], &np);
             int nbad = __builtin_popcountll(bad);
             jp(&j, ",\"bad\":%d", nbad);
+            if (np < TPMS_FORD_PAYLOAD_BITS) jp(&j, ",\"pairs\":%d", np);
             if (nbad && nbad <= RADIO_NEAR_MISS_BAD) {
                 jp(&j, ",\"bad_at\":[");
                 for (int b = 0, k = 0; b < TPMS_FORD_PAYLOAD_BITS; b++)
@@ -318,6 +331,97 @@ static esp_err_t h_rflog(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     esp_err_t err = j.len < j.cap ? httpd_resp_send(req, j.buf, j.len) : httpd_resp_send_500(req);
     free(ev); free(cap); free(j.buf);
+    return err;
+}
+
+/* Chunked JSON: flushes the buffer when less than `room` bytes are left. */
+static esp_err_t jflush(httpd_req_t *req, jbuf_t *j, size_t room)
+{
+    if (j->len + room < j->cap) return ESP_OK;
+    esp_err_t err = j->len ? httpd_resp_send_chunk(req, j->buf, j->len) : ESP_OK;
+    j->len = 0;
+    return err;
+}
+
+/*
+ * GET /api/pkts[?id=<hex>]: the packet log and kept failures (radio.h), oldest
+ * first, as compact rows. The link to the device can be slow, so rows are
+ * arrays and only the selected sensor's packets go out when id is given:
+ *   {"now":ms,"epoch":s,"p":[[ms,rssi,noise,foff,afc,lqi,code,fl(,"id")],..],
+ *    "f":[[ms,rssi,noise,foff,lqi,st,fl,pairs,first_bad,"id","hex"],..]}
+ * ms: uptime of the sync word (wall time = epoch*1000 + ms - now; epoch 0 =
+ * clock not set). code: payload bytes 4..6. fl: RADIO_CAP_RESTARTED 1,
+ * RADIO_CAP_ABORTED 2, RADIO_PKT_QUALITY 8 (foff/lqi valid). st:
+ * tpms_ford_status_t. pairs: Manchester pairs held (64 = all), first_bad: -1 if
+ * none. "id": "" if the ID pairs are damaged. With id, "f" has that sensor's
+ * failures plus ID-less ones within RADIO_FAIL_WINDOW_MS of its packets.
+ */
+static esp_err_t h_pkts(httpd_req_t *req)
+{
+    uint32_t sel = 0;
+    bool filter = false;
+    char q[32], v[12];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "id", v, sizeof(v)) == ESP_OK && v[0]) {
+        sel = (uint32_t)strtoul(v, NULL, 16);
+        filter = true;
+    }
+    radio_pkt_t *pk = malloc(sizeof(radio_pkt_t) * RADIO_PKT_LOG);
+    radio_capture_t *fl = malloc(sizeof(radio_capture_t) * RADIO_FAILS);
+    jbuf_t j = {.buf = malloc(2048), .cap = 2048};
+    if (!pk || !fl || !j.buf) {
+        free(pk); free(fl); free(j.buf);
+        return httpd_resp_send_500(req);
+    }
+    int np = radio_get_packets(pk, RADIO_PKT_LOG, NULL);
+    int nf = radio_get_fails(fl, RADIO_FAILS, NULL);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    jp(&j, "{\"now\":%u,\"epoch\":%lld,\"p\":[", (unsigned)now_ms(), (long long)net_wall_time(0));
+    esp_err_t err = ESP_OK;
+    bool first = true;
+    for (int i = 0; i < np && err == ESP_OK; i++) {
+        const radio_pkt_t *p = &pk[i];
+        if (filter && p->id != sel) continue;
+        jp(&j, "%s[%u,%d,%d,%d,%d,%u,%u,%u", first ? "" : ",", (unsigned)p->ms, p->rssi_dbm, p->noise_dbm,
+           (int)p->freq_off_hz, (int)p->afc_hz, p->lqi,
+           (unsigned)(p->code[0] << 16 | p->code[1] << 8 | p->code[2]), p->flags);
+        if (!filter) jp(&j, ",\"%08x\"", (unsigned)p->id);
+        jp(&j, "]");
+        first = false;
+        err = jflush(req, &j, 128);
+    }
+    jp(&j, "],\"f\":[");
+    first = true;
+    for (int i = 0; i < nf && err == ESP_OK; i++) {
+        const radio_capture_t *c = &fl[i];
+        uint32_t id;
+        bool has_id = radio_capture_id(c, &id);
+        if (filter) {
+            bool near = false;
+            if (!has_id)
+                for (int k = 0; k < np && !near; k++)
+                    near = pk[k].id == sel && (uint32_t)(c->ms - pk[k].ms + RADIO_FAIL_WINDOW_MS) <=
+                                                  2 * RADIO_FAIL_WINDOW_MS;
+            if (has_id ? id != sel : !near) continue;
+        }
+        int pairs;
+        uint64_t bad = radio_capture_bad(c, &pairs);
+        char ids[10] = "", hex[2 * RADIO_CAPTURE_MAX + 1] = "";
+        if (has_id) snprintf(ids, sizeof(ids), "%08x", (unsigned)id);
+        for (int k = 0; k < c->len; k++) sprintf(hex + 2 * k, "%02x", c->data[k]);
+        jp(&j, "%s[%u,%d,%d,%d,%u,%u,%u,%d,%d,\"%s\",\"%s\"]", first ? "" : ",", (unsigned)c->ms, c->rssi_dbm,
+           c->noise_dbm, (int)c->freq_off_hz, c->lqi, c->status,
+           (c->flags & (RADIO_CAP_RESTARTED | RADIO_CAP_ABORTED)) | (c->quality ? RADIO_PKT_QUALITY : 0), pairs,
+           bad ? __builtin_ctzll(bad) : -1, ids, hex);
+        first = false;
+        err = jflush(req, &j, 160);
+    }
+    jp(&j, "]}");
+    if (err == ESP_OK) err = jflush(req, &j, j.cap);  /* everything left */
+    if (err == ESP_OK) err = httpd_resp_send_chunk(req, NULL, 0);
+    free(pk); free(fl); free(j.buf);
     return err;
 }
 
@@ -633,7 +737,7 @@ void web_start(void)
     cfg.lru_purge_enable = true;
     cfg.close_fn = on_close;
     cfg.stack_size = 6144;
-    cfg.max_uri_handlers = 12;
+    cfg.max_uri_handlers = 13;
     if (httpd_start(&s_server, &cfg) != ESP_OK) {
         ESP_LOGE(TAG, "httpd_start failed");
         return;
@@ -643,6 +747,7 @@ void web_start(void)
         {.uri = "/oled", .method = HTTP_GET, .handler = h_oled},
         {.uri = "/api/state", .method = HTTP_GET, .handler = h_state},
         {.uri = "/api/rflog", .method = HTTP_GET, .handler = h_rflog},
+        {.uri = "/api/pkts", .method = HTTP_GET, .handler = h_pkts},
         {.uri = "/api/radio", .method = HTTP_POST, .handler = h_radio},
         {.uri = "/api/display", .method = HTTP_POST, .handler = h_display},
         {.uri = "/api/tire", .method = HTTP_POST, .handler = h_tire},

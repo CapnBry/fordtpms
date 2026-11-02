@@ -29,12 +29,16 @@ typedef struct {
     bool    payload_quality;  /* payload_freq_off_hz and payload_lqi are valid */
     int32_t payload_freq_off_hz;
     uint8_t payload_lqi;
+    bool    payload_restarted;     /* first packet after an early abort */
+    bool    payload_aborted;       /* payload_len bytes: a packet abandoned at its first bad pair */
     uint8_t payload[32];
     bool    idle;             /* between packets: idle_rssi_dbm is a noise sample */
     int     idle_rssi_dbm;
 } radio_hw_poll_t;
 
 extern const radio_caps_t radio_hw_caps;
+/* Longest the radio task sleeps between hw_poll calls without an interrupt. */
+extern const uint32_t hw_poll_ms;
 
 /* Bytes per payload for a sync mode (radio.c). */
 int radio_payload_len(radio_sync_mode_t m);

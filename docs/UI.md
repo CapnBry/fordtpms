@@ -34,7 +34,7 @@ Shown from power-up until the first valid packet is received.
 | Top left | `TPMS SCAN` title |
 | Top right | Receive frequency in MHz (`radio freq`) |
 | Scanner bar | 15 blocks; a lit block sweeps left and right with a fading tail. Shows that the firmware is running |
-| Graph (`RF`) | Scrolling RF level history. Each column is the **peak** RSSI over 250 ms, so the box spans the last 20 s. Scale is about −95 dBm (bottom) to −35 dBm (top), with dotted grid lines at −80, −65 and −50 dBm. A spike is a burst of 315 MHz energy from something nearby |
+| Graph (`RF`) | Scrolling RF level history. Each column is the **peak** RSSI over 500 ms. The web UI's box spans the last 30 s, the OLED idle graph 40 s. Scale is about −95 dBm (bottom) to −35 dBm (top), with dotted grid lines at −80, −65 and −50 dBm. A spike is a burst of 315 MHz energy from something nearby |
 | `NOISE` | Smoothed noise floor in dBm, as the radio reports it |
 | `SYNC` | Number of times the radio matched the sync word. This climbs slowly even without sensors, because noise sometimes matches (roughly every 5–10 s) |
 | `UP` | Uptime, `hh:mm:ss` |

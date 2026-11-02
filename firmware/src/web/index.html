@@ -213,6 +213,22 @@ td.mode-MOVING { color: var(--green); }
 td.mode-LEARN { color: var(--blue); }
 td.pos { color: var(--red); font-weight: 700; text-shadow: 0 0 6px #ff241466; }
 tbody tr { cursor: pointer; }
+#log td.id { text-decoration: underline dotted #ffd38a88; text-underline-offset: 3px; }
+#log td.id:hover { color: #fff; text-shadow: 0 0 8px #ffd38a; }
+
+/* ---- packet history ---- */
+#dlg-pkts { width: min(1040px, calc(100vw - 32px)); }
+#dlg-pkts .m-body { gap: 10px; }
+.pk-sum { display: flex; flex-wrap: wrap; gap: 6px 18px; font: 11px ui-monospace, Consolas, monospace; color: var(--dim); letter-spacing: .05em; }
+.pk-sum b { color: var(--amber); font-weight: 400; }
+.pk-wrap { max-height: min(60vh, 560px); overflow: auto; border: 1px solid #1c1c20; border-radius: 3px; }
+.pk-wrap table { font-size: 12px; }
+.pk-wrap thead th { position: sticky; top: 0; background: #0d0d0f; z-index: 1; }
+.pk-wrap tbody tr { cursor: default; }
+.pk-wrap tr.burst td { color: var(--dim); text-shadow: none; text-align: left; font-size: 10px; letter-spacing: .2em; padding-top: 10px; border-bottom: 1px dashed #333; }
+.pk-wrap tr.fail td { color: #ff6a5c; text-shadow: none; }
+.pk-wrap tr.fail .hex { color: var(--dim); font-size: 10.5px; }
+.pk-wrap td.ok { color: var(--green); }
 tbody tr:hover td { background: #140a05; }
 tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
 @keyframes fresh { from { background: #5a1208; } to { background: transparent; } }
@@ -338,7 +354,7 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
     </section>
 
     <section class="panel">
-      <h2><span>RF History <b>&middot;</b> 20 s</span><span>peak / 250 ms</span></h2>
+      <h2><span>RF History <b>&middot;</b> 30 s</span><span>peak / 500 ms</span></h2>
       <canvas id="hist"></canvas>
       <h2 style="margin-top:14px"><span>Telemetry</span><span id="uptime-lbl"></span></h2>
       <div class="tele">
@@ -350,6 +366,8 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
         <div class="lcd"><span class="lbl">ERR CKSUM</span><span class="seg" id="t-ec"></span></div>
         <div class="lcd"><span class="lbl">ERR FLAGS</span><span class="seg" id="t-ef"></span></div>
         <div class="lcd"><span class="lbl">OVERRUN</span><span class="seg" id="t-ovr"></span></div>
+        <div class="lcd" title="payloads cut short at their first bad Manchester pair, receiver straight back to sync search"><span class="lbl">EARLY ABORT</span><span class="seg" id="t-abort"></span></div>
+        <div class="lcd" title="packets decoded right after an early abort: a sensor that started on top of another packet"><span class="lbl">CAUGHT</span><span class="seg green" id="t-caught"></span></div>
         <div class="lcd"><span class="lbl">IDS</span><span class="seg green" id="t-ids"></span></div>
         <div class="lcd"><span class="lbl">BEST dBm</span><span class="seg green" id="t-best"></span></div>
         <div class="lcd"><span class="lbl">WORST dBm</span><span class="seg amber" id="t-worst"></span></div>
@@ -372,7 +390,7 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
         </table>
         <div class="empty-log" id="log-empty">NO SENSORS ACQUIRED &middot; SCANNING</div>
       </div>
-      <div class="foot"><span id="foot-l">Last = local time of last packet (uptime if clock not synced) &middot; tap a row to assign it to a wheel</span><span id="foot-r"></span></div>
+      <div class="foot"><span id="foot-l">Last = local time of last packet (uptime if clock not synced) &middot; tap an ID for its packet history, elsewhere on the row to assign it to a wheel</span><span id="foot-r"></span></div>
     </section>
   </div>
 </div>
@@ -399,6 +417,33 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
       <span class="spacer"></span>
       <button class="ctl" value="cancel" formnovalidate>Abort</button>
       <button class="ctl" type="button" id="t-save">Engage</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-pkts">
+  <form method="dialog">
+    <div class="m-head"><h3>Packet History <span id="pk-id"></span></h3><small>Decoded packets &middot; kept failures &middot; newest first</small><div class="m-scan"></div></div>
+    <div class="m-body">
+      <div class="pk-sum" id="pk-sum"></div>
+      <div class="pk-wrap">
+        <table>
+          <thead><tr>
+            <th class="l">Time</th><th title="ms since the previous row of the same burst">&Delta;ms</th><th>RSSI</th><th title="RSSI above the noise floor">SNR</th>
+            <th title="carrier offset measured by the receiver, kHz">Foff</th><th title="AFC overlay tuned in at the time, kHz">AFC</th>
+            <th title="link quality, lower = cleaner">LQI</th><th>PSI</th><th>Temp</th><th class="l">Mode</th><th class="l">Note</th>
+          </tr></thead>
+          <tbody id="pk-rows"></tbody>
+        </table>
+      </div>
+      <div class="m-note">The board keeps the last 128 decoded packets of all sensors, and up to 48 failed payloads that were probably sensor packets: Manchester-clean but bad checksum or flags, few damaged pairs, a clean ID, or strong and within 3&nbsp;s of a decoded packet. Red rows are failures with this ID, or with a damaged ID close to this sensor's packets. <i>early abort @n</i> = cut at bad pair n (the receiver went straight back to sync search); <i>after abort</i> = decoded right after one. RAM only: cleared on reboot.</div>
+      <div class="m-err" id="pk-err"></div>
+    </div>
+    <div class="m-foot">
+      <button class="ctl" type="button" id="pk-assign">Assign wheel</button>
+      <span class="spacer"></span>
+      <button class="ctl" type="button" id="pk-refresh">Refresh</button>
+      <button class="ctl" value="cancel" formnovalidate>Close</button>
     </div>
   </form>
 </dialog>
@@ -632,7 +677,7 @@ function drawHist() {
   }
   c.setLineDash([]);
   if (!status || !status.hist) return;
-  const hs = status.hist, n = 80, bw = w / n;
+  const hs = status.hist, n = 60, bw = w / n;
   for (let i = 0; i < hs.length; i++) {
     const db = hs[i], x = (n - hs.length + i) * bw, top = y(db);
     const above = db - status.noise;
@@ -710,6 +755,8 @@ function renderLog() {
       tr = tb.insertRow();
       ["", "l pos", "l id", "psi", "", "", "l", "l", "", "", "", "", "", ""].forEach(cls => { const td = tr.insertCell(); td.className = cls; });
       tr.addEventListener("click", () => openTire({ id: tr.dataset.id }));
+      tr.cells[2].title = "packet history";
+      tr.cells[2].addEventListener("click", e => { e.stopPropagation(); openPkts(tr.dataset.id); });
     }
     const last = s.wall ? s.wall.slice(11) : fmtHms(s.last);
     tr.dataset.id = s.id;
@@ -750,6 +797,7 @@ function onStatus(m) {
   const bad = m.err_manchester + m.err_checksum + m.err_flags;
   seg("t-syncs", m.syncs, 7); seg("t-payloads", m.payloads, 7); seg("t-decoded", m.decoded, 7); seg("t-bad", bad, 7);
   seg("t-em", m.err_manchester, 7); seg("t-ec", m.err_checksum, 7); seg("t-ef", m.err_flags, 7); seg("t-ovr", m.overruns, 7);
+  seg("t-abort", m.aborts ?? "----", 7); seg("t-caught", m.abort_dec ?? "----", 7);
   seg("t-ids", m.ids, 7);
   seg("t-best", m.decoded ? m.best_rssi : "----", 7); seg("t-worst", m.decoded ? m.worst_rssi : "----", 7);
   seg("t-lastpkt", m.decoded ? fmtAge(m.now - m.last_decode).replace("h", ".") : "--:--", 7);
@@ -901,6 +949,97 @@ $("t-clear").addEventListener("click", () => {
   run("t-err", () => post("/api/tire", { pos: POS[tireSel], id: "" }), $("dlg-tire"));
 });
 
+/* packet history (GET /api/pkts?id=, rows documented in web.c) */
+const PK_ST = ["ok", "short", "manchester", "checksum", "flags", "zero", "nosync"];
+const PK_MODE = { 0x08: "LEARN", 0x04: "REST", 0x44: "MOVING" };
+let pkId = "", pkLast = null, pkBusy = false;
+function pkCode(code) {     /* payload bytes 4..6 -> psi, temp, mode (tpms_ford.c) */
+  const b4 = code >> 16, b5 = (code >> 8) & 255, b6 = code & 255;
+  return { psi: (((b6 & 0x20) << 3) | b4) / 4, temp: b5 & 0x80 ? null : (b5 & 0x7f) - 56, mode: PK_MODE[b6 & 0x4c] || "?" };
+}
+function pkTime(d, ms) {    /* local wall time with ms, or uptime if the clock isn't set */
+  if (!d.epoch) return "up " + fmtHms(ms) + "." + pad(ms % 1000, 3);
+  const t = new Date(d.epoch * 1000 + ms - d.now), today = new Date();
+  const day = t.toDateString() === today.toDateString() ? "" : `${pad(t.getMonth() + 1)}-${pad(t.getDate())} `;
+  return `${day}${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}.${pad(t.getMilliseconds(), 3)}`;
+}
+const kHz = hz => (hz / 1000).toFixed(1);
+function pkRender(d) {
+  const rows = [];
+  d.p.forEach(([ms, rssi, noise, foff, afc, lqi, code, fl]) => rows.push({ ms, rssi, noise, foff, afc, lqi, fl, ok: true, ...pkCode(code) }));
+  d.f.forEach(([ms, rssi, noise, foff, lqi, st, fl, pairs, firstBad, id, hex]) => rows.push({ ms, rssi, noise, foff, lqi, st, fl, pairs, firstBad, id, hex, ok: false }));
+  rows.sort((a, b) => b.ms - a.ms);
+  const tb = $("pk-rows");
+  tb.innerHTML = "";
+  const cell = (tr, text, cls) => { const td = tr.insertCell(); td.textContent = text; if (cls) td.className = cls; return td; };
+  /* bursts: rows closer than 3 s (SENSORS_BURST_GAP_MS) */
+  rows.forEach((r, i) => {
+    const prev = rows[i - 1], next = rows[i + 1];
+    if (!prev || prev.ms - r.ms > 3000) {
+      let k = i, n = 0, nf = 0;
+      while (k < rows.length && (k === i || rows[k - 1].ms - rows[k].ms <= 3000)) { rows[k].ok ? n++ : nf++; k++; }
+      const tr = tb.insertRow(); tr.className = "burst";
+      const td = cell(tr, `\u25BC BURST ${pkTime(d, r.ms).replace(/\.\d+$/, "")} \u00b7 ${n} decoded${nf ? ` \u00b7 ${nf} failed` : ""}`);
+      td.colSpan = 11;
+    }
+    const tr = tb.insertRow(); if (!r.ok) tr.className = "fail";
+    cell(tr, pkTime(d, r.ms), "l");
+    cell(tr, next && r.ms - next.ms <= 3000 ? r.ms - next.ms : "");
+    cell(tr, r.rssi);
+    cell(tr, r.rssi - r.noise);
+    const q = r.fl & 8;
+    cell(tr, q ? kHz(r.foff) : "--");
+    cell(tr, r.ok ? kHz(r.afc) : "");
+    cell(tr, q && r.lqi < 127 ? r.lqi : "--");
+    if (r.ok) {
+      cell(tr, psiStr(r.psi), "psi"); cell(tr, r.temp === null ? "--" : r.temp + "C"); cell(tr, r.mode, "l mode-" + r.mode);
+      cell(tr, r.fl & 1 ? "after abort" : "", "l ok");
+    } else {
+      const what = (r.fl & 2 ? `early abort @${r.firstBad}` : PK_ST[r.st] || "?") +
+        (r.pairs && r.pairs < 64 && !(r.fl & 2) ? ` (${r.pairs} pairs)` : r.firstBad >= 0 && !(r.fl & 2) ? ` @${r.firstBad}` : "") +
+        (r.id ? "" : " \u00b7 ID damaged");
+      const td = cell(tr, what + "  ", "l"); td.colSpan = 3;
+      const hx = document.createElement("span"); hx.className = "hex"; hx.textContent = r.hex;
+      td.appendChild(hx);
+      cell(tr, r.fl & 1 ? "after abort" : "", "l");
+    }
+  });
+  const ok = rows.filter(r => r.ok);
+  if (!rows.length) {
+    const tr = tb.insertRow(), td = cell(tr, "NO PACKETS IN THE LOG FOR THIS ID (LOST ON REBOOT, OR PUSHED OUT BY 128 NEWER ONES)", "l");
+    td.colSpan = 11; td.style.color = "var(--dim)";
+  }
+  const stat = (k, f = x => x) => { const v = ok.filter(r => k !== "foff" || r.fl & 8).map(r => r[k]); if (!v.length) return "--";
+    const mean = v.reduce((a, b) => a + b, 0) / v.length; return `${f(Math.min(...v))} / ${f(mean)} / ${f(Math.max(...v))}`; };
+  $("pk-sum").innerHTML = "";
+  [["PACKETS", ok.length], ["FAILURES", rows.length - ok.length],
+   ["RSSI min/mean/max", stat("rssi", x => Math.round(x))], ["FOFF kHz", stat("foff", kHz)], ["LQI", stat("lqi", x => Math.round(x))],
+   ["CLOCK", d.epoch ? "local time" : "uptime (not synced)"]].forEach(([k, v]) => {
+    const s = document.createElement("span"); s.textContent = k + " "; const b = document.createElement("b"); b.textContent = v; s.appendChild(b); $("pk-sum").appendChild(s);
+  });
+}
+async function pkLoad() {
+  if (pkBusy) return;
+  pkBusy = true; msg("pk-err", "RECEIVING\u2026", true);
+  try {
+    const r = await fetch("/api/pkts?id=" + pkId, { cache: "no-store" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    pkRender(await r.json()); msg("pk-err", "");
+  } catch (e) { msg("pk-err", String(e.message || e).toUpperCase()); }
+  pkBusy = false;
+}
+function openPkts(id) {
+  pkId = id;
+  const s = sensors && sensors.list.find(x => x.id === id), p = tires().indexOf(id);
+  pkLast = s ? s.last : null;
+  $("pk-id").textContent = `\u00b7 ${id}${p >= 0 ? " \u00b7 " + POS[p] : ""}`;
+  $("pk-rows").innerHTML = ""; $("pk-sum").innerHTML = "";
+  $("dlg-pkts").showModal();
+  pkLoad();
+}
+$("pk-refresh").addEventListener("click", pkLoad);
+$("pk-assign").addEventListener("click", () => { $("dlg-pkts").close(); openTire({ id: pkId }); });
+
 /* radio */
 const fmtHz = hz => (hz < 0 ? "\u2212" : "+") + Math.abs(hz).toLocaleString("en-US");
 function afcPaint(a) {    /* status.afc: estimate and applied overlay (Hz), packets */
@@ -1019,6 +1158,11 @@ function frame(t) {
     /* repaint the open tire dialog only when the data changes, so clicks on chips aren't lost */
     const key = JSON.stringify([tires(), sensors && sensors.gen]);
     if ($("dlg-tire").open && key !== tirePaintKey) { tirePaintKey = key; tirePaint(); }
+    /* new packet from the sensor on show: fetch its history again, once the burst has gone quiet */
+    if ($("dlg-pkts").open && sensors) {
+      const s = sensors.list.find(x => x.id === pkId);
+      if (s && s.last !== pkLast && deviceNow() - s.last > 3500) { pkLast = s.last; pkLoad(); }
+    }
   }
 }
 seg("sig", "----", 4); seg("noise", "----", 4); seg("lastrssi", "----", 4);

@@ -107,7 +107,7 @@ void app_assign_tire(tire_pos_t pos, uint32_t id)
     int old_pos;
     tires_set(pos, id, &old_id, &old_pos);
     ESP_LOGI(TAG, "tire %s: %08x -> %08x", tires_short_name(pos), (unsigned)old_id, (unsigned)id);
-    ha_mqtt_tires_changed();
+    ha_mqtt_tires_changed(old_pos < 0 ? id : TIRE_NONE);
 }
 
 bool app_can_reboot_to_bootloader(void)

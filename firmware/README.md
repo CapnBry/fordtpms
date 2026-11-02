@@ -58,11 +58,13 @@ How the pins were picked, performance first:
 Receiver setup: 2-FSK, 19 231 baud, ±81.25 kHz filter (162.5 kHz double-sided,
 the nearest to ±83 kHz), AGC, frequency offset compensation ±BW/4, DC filter
 on. Sync `0x5556` 16/16 bits, preamble quality gate off, fixed 16-byte payload,
-appended RSSI/LQI status. After a packet the chip stays in RX, so frames sent
-back to back aren't missed. The synthesizer is recalibrated every 60 s; each
-recalibration leaves the receiver deaf for ~0.8 ms. Lock: after calibration, `FSCAL1`
-reads 0x3F if the PLL could not lock (datasheet section 22.1). It's checked
-after each retune and every 250 ms. RSSI uses the datasheet's 74 dB offset.
+appended RSSI/LQI status. After a packet the chip goes IDLE (holding the
+frequency offset estimate) until the radio task has read it, then restarts RX
+without recalibrating (~75 µs). The synthesizer is recalibrated every 30 min;
+each recalibration leaves the receiver deaf for ~0.8 ms. Lock: after
+calibration, `FSCAL1` reads 0x3F if the PLL could not lock (datasheet section
+22.1). It's checked after each retune and each recalibration, never polled
+(retried every 1 s while it fails). RSSI uses the datasheet's 74 dB offset.
 
 **Not yet tested on hardware.** Run `probe` first: it checks SO/CSn, SPI write
 and readback, and drives each GDO high and low to verify the wiring. Then run
@@ -209,10 +211,13 @@ work. On the CC1101:
 * GDO2 (sync word) interrupt: the RSSI register freezes at the sync word
 * GDO0 (end of packet) interrupt: read the payload and its appended RSSI from the
   FIFO, Manchester-decode, verify checksum and flag bits exactly as rtl_433
-  does; the chip is already receiving again
+  does, then restart RX
 
-The radio task also polls PKTSTATUS/RXBYTES every 5 ms as a fallback, and
-samples RSSI between packets to estimate the noise floor.
+Nothing is polled over SPI: SPI traffic while a packet arrives damages weak
+packets (quiet reception, below). When the radio task wakes it checks the GDO0
+and GDO2 pin levels, which catches a missed edge without touching the bus.
+Quiet wakeups, every 100 ms, take one RSSI sample for the noise floor and the
+RF history.
 
 The LR1121 uses the same sync word, payload length and chip rate in its GFSK
 engine (no CRC, no whitening, preamble detector off, nearest filter ±78.1 kHz).
@@ -274,7 +279,7 @@ Screen-by-screen description with screenshots: [../docs/UI.md](../docs/UI.md).
 All screens use 1980s-dash-style slanted 7-segment digits and segmented bar graphs.
 
 * **Idle / scanning** (before the first packet): a sweeping scanner bar,
-  scrolling RF noise graph (peak RSSI per 250 ms), live noise floor, sync
+  scrolling RF noise graph (peak RSSI per 500 ms), live noise floor, sync
   counter, uptime, and packet/bad/ID counters.
 * **Detail**: sensor ID, burst count, large pressure in PSI, temperature, kPa,
   a 0–60 PSI wedge bar graph, signal-strength bars, and a bottom line that
@@ -345,14 +350,14 @@ doesn't matter on USB power; on battery, go back to `WIFI_PS_MIN_MODEM`.
 `http://fordtpms.local/` (or the IP address from `wifi`). The page is a
 1980s-dash-style console. It shows a scanner bar, the live RF level as a
 tachometer-style bar graph (with noise-floor and last-packet markers), the
-20 s RF history, every radio counter, the four most recent sensors around a
+30 s RF history, every radio counter, the four most recent sensors around a
 car outline, and the full sensor table, the same columns as the `sensors`
 command. Ages tick in the browser.
 
 * `/ws`: WebSocket. The firmware pushes one `status` message every 500 ms
   (2 Hz). The sensor table rides along in it as `sensors` when it has changed,
-  and at least every 5 s. `rssi` is the peak of the 250 ms RF samples since the
-  previous message, and `hist` carries the full 20 s history.
+  and at least every 5 s. `rssi` is the peak of the 500 ms RF samples since the
+  previous message, and `hist` carries the last 30 s of history.
 * Heartbeat: the page sends `ping` every 2 s and the firmware answers `pong`.
   If the page gets nothing for 6 s, it shows *SIGNAL LOST*, drops the socket and
   reconnects with backoff (1 s up to 10 s). The firmware closes WebSockets that
@@ -361,6 +366,11 @@ command. Ages tick in the browser.
   identifies the running build: `elf` is the first 8 hex digits of the ELF's
   SHA-256 (`sha256sum .pio/build/<env>/firmware.elf`), `probation` is true
   while a new OTA image is unconfirmed.
+* `/api/pkts[?id=<hex>]`: the packet log and the kept failures (see
+  *Troubleshooting reception*) as compact rows, sent chunked. With `id`, only
+  that sensor's packets, its failures and ID-less failures within 3 s of its
+  packets go out. The row layout is documented above `h_pkts` in `web.c`. The
+  web UI uses it for the packet history dialog: tap a sensor ID in the scan log.
 * `/update`: POST a firmware image to flash it (see *Over Wi-Fi (OTA)*).
 * `/oled`: the display's current frame, drawn as a transflective LCD at a
   selectable integer scale (1x to 8x; by default the largest that fits the
@@ -430,8 +440,8 @@ The MQTT and mDNS clients come from the ESP-IDF component registry
 
 * `rflog` (or `http://fordtpms.local/api/rflog`, which needs no serial port).
   Opening the serial port can reset the board, so use the URL after an
-  unattended run. It holds three RAM-only lists:
-  * **RF events**: runs of 250 ms windows whose peak RSSI was at least 12 dB
+  unattended run. It holds these RAM-only lists:
+  * **RF events**: runs of 500 ms windows whose peak RSSI was at least 12 dB
     above the noise floor, with the syncs, payloads and decodes during each
     run (last 48)
   * **Strongest events**: the 16 loudest since boot, so a real burst isn't
@@ -441,7 +451,35 @@ The MQTT and mDNS clients come from the ESP-IDF component registry
     each also has `foff` (Hz, the chip's frequency offset estimate at the sync
     word) and `lqi` (0–127, lower = cleaner). `/api/rflog` also has `bad`, the
     number of invalid Manchester pairs, and `bad_at`, the damaged bit positions
-    when there are only a few.
+    when there are only a few. `pairs` is set when the payload is partial
+    (early abort, below, off by default), `fl` is 1 for a packet right after
+    an early abort and 2 for the aborted payload itself.
+  * **Kept failures** (last 48, `rflog` and `/api/pkts`): failed payloads that
+    were probably sensor packets, in their own list so noise can't push them
+    out: Manchester-clean but with a bad checksum or flags, at most 8 bad
+    pairs, an undamaged ID (first 32 pairs), or at least 12 dB above the noise
+    and within 3 s of a decoded packet (a collision in the same round).
+  * **Packet log** (last 128 decoded packets, `/api/pkts` and the web UI's
+    packet history): time, RSSI, noise, frequency offset, AFC overlay, LQI and
+    the reading of each packet.
+
+  **Quiet reception (CC1101):** SPI traffic while a packet is arriving
+  corrupts it. Sensors 25 dB above the noise lost every packet, damaged in the
+  first payload chips, where the radio task used to read status registers
+  right after the sync interrupt. Now, once GDO2 shows a packet in progress,
+  the task touches nothing but that pin until the packet ends. The chip then
+  goes IDLE, which holds the frequency offset estimate (`foff`), and the task
+  reads the FIFO and `foff` and restarts RX without recalibrating (~75 µs).
+
+  **Early abort (CC1101, off):** `RADIO_EARLY_ABORT` in `radio_cc1101.c`
+  reads each payload out of the FIFO as it arrives and goes back to sync
+  search at the first invalid Manchester pair, so a sensor that starts on top
+  of a packet (or a noise sync) can still be caught. It's off because that
+  reading is exactly the SPI traffic that damages packets. With it on,
+  `aborts`/`abort_dec` (CAUGHT in the web UI) count aborted payloads and
+  packets decoded right after one, partial payloads carry `pairs` and `fl`,
+  and `near_miss`/`bad_bit_hist` stop growing. With it off, the abort counters
+  stay 0.
 
   `near_miss` counts Manchester failures with 1–4 bad pairs. Noise payloads
   have about 30, so these are real packets with a few damaged chips.

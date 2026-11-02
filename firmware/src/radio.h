@@ -41,6 +41,8 @@ typedef struct {
     bool     quality;         /* freq_off_hz and lqi are valid (CC1101 only) */
     int32_t  freq_off_hz;     /* carrier offset from the tuned frequency, as the chip's FOC measured it */
     uint8_t  lqi;             /* CC1101 link quality, 0..127: lower = cleaner demodulation */
+    bool     restarted;       /* the first packet after an early abort (radio_stats_t.rx_aborts) */
+    bool     aborted;         /* partial payload of a packet abandoned at its first bad Manchester pair */
 } radio_rx_info_t;
 
 typedef struct {
@@ -65,7 +67,20 @@ typedef struct {
     bool     present;         /* chip found at init */
     char     chip[40];        /* e.g. "CC1101 part 0x00 v0x14", "LR1121 hw 0x22 fw 01.04" */
     bool     pll_locked;      /* synthesizer locked: false = receiver is not tuned, hears nothing */
-    uint32_t pll_unlocked_polls;  /* lock checks that found the PLL unlocked (every ~250 ms) */
+    uint32_t pll_unlocked_polls;  /* lock checks that found the PLL unlocked (CC1101: after tune/recal; LR1121: every ~250 ms) */
+    /* Early aborts (CC1101): payloads abandoned at their first bad Manchester
+     * pair, the receiver going straight back to sync search (also counted in
+     * err_manchester). abort_decodes: packets decoded right after one, i.e.
+     * a stronger sensor that started on top of a packet and was caught. */
+    uint32_t rx_aborts;
+    uint32_t abort_decodes;
+    /* CC1101 status register reads (errata SWRZ020: read until two reads
+     * agree). status_rereads: reads whose first two values disagreed, so a
+     * third or later read was needed; status_unsettled: no two consecutive
+     * reads agreed within 5 (the last value is used). Always 0 on the LR1121. */
+    uint32_t status_reads;
+    uint32_t status_rereads;
+    uint32_t status_unsettled;
 } radio_stats_t;
 
 /* What the fitted chip can do, for the CLI and web UI. */
@@ -86,7 +101,7 @@ int radio_bandwidths(uint32_t *out, int max);
 
 /*
  * Reception diagnostics, kept in RAM:
- *  - RF events: runs of 250 ms windows whose peak RSSI is at least
+ *  - RF events: runs of 500 ms windows whose peak RSSI is at least
  *    RADIO_EVENT_DB above the noise floor, with the sync/payload/decode counts
  *    seen during the run. A strong event with no syncs points at polarity or
  *    frequency; syncs without decodes at timing/deviation.
@@ -107,9 +122,33 @@ typedef struct {
     uint16_t syncs, payloads, decoded;
 } radio_event_t;
 
+/*
+ * Packet log: every decoded packet, oldest overwritten after RADIO_PKT_LOG.
+ *
+ * Failed payloads worth keeping go to their own ring (RADIO_FAILS), which
+ * noise cannot flush. A failure (sync RSSI >= noise + RADIO_CAPTURE_DB) is
+ * kept when it is likely a real sensor packet:
+ *  - its payload is Manchester-clean but wrong (checksum or flag errors),
+ *  - it has at most RADIO_FAIL_BAD damaged pairs,
+ *  - its first 32 pairs (the sensor ID) are clean, or
+ *  - it is at least RADIO_FAIL_DB above the noise and within
+ *    RADIO_FAIL_WINDOW_MS before or after a decoded packet (a collision with
+ *    another sensor of the same round).
+ */
+#define RADIO_PKT_LOG        128
+#define RADIO_FAILS          48
+#define RADIO_FAIL_BAD       8
+#define RADIO_FAIL_DB        12
+#define RADIO_FAIL_WINDOW_MS 3000
+#define RADIO_CAP_RESTARTED 0x01   /* radio_capture_t.flags / radio_pkt_t.flags: see radio_rx_info_t.restarted */
+#define RADIO_CAP_ABORTED   0x02   /* see radio_rx_info_t.aborted: data holds the payload up to the bad pair */
+#define RADIO_CAP_KEPT      0x04   /* also copied to the failure ring */
+#define RADIO_PKT_QUALITY   0x08   /* radio_pkt_t: freq_off_hz and lqi are valid */
+
 typedef struct {
     uint32_t ms;
     int8_t   rssi_dbm, noise_dbm;
+    uint8_t  flags;           /* RADIO_CAP_* */
     bool     quality;         /* see radio_rx_info_t */
     uint8_t  lqi;
     int32_t  freq_off_hz;
@@ -118,11 +157,31 @@ typedef struct {
     uint8_t  data[RADIO_CAPTURE_MAX];
 } radio_capture_t;
 
+typedef struct {
+    uint32_t ms;              /* sync time */
+    uint32_t id;
+    uint8_t  code[3];         /* payload bytes 4..6: pressure, temperature, flags */
+    int8_t   rssi_dbm, noise_dbm;
+    uint8_t  lqi;
+    uint8_t  flags;           /* RADIO_PKT_QUALITY, RADIO_CAP_RESTARTED */
+    int32_t  freq_off_hz;     /* measured, relative to the tuned frequency */
+    int32_t  afc_hz;          /* AFC overlay tuned in at the time: carrier = freq + afc_hz + freq_off_hz */
+} radio_pkt_t;
+
 /* Oldest first. `total` (optional) counts all recorded since boot/clear. */
 int radio_get_events(radio_event_t *out, int max, uint32_t *total);
 /* The RADIO_TOP_EVENTS strongest finished events since boot/clear, oldest first. */
 int radio_get_top_events(radio_event_t *out, int max);
 int radio_get_captures(radio_capture_t *out, int max, uint32_t *total);
+/* Packet log and failure ring (above), oldest first. */
+int radio_get_packets(radio_pkt_t *out, int max, uint32_t *total);
+int radio_get_fails(radio_capture_t *out, int max, uint32_t *total);
+/* Sensor ID from a capture's first 32 Manchester pairs; false if any of them is
+ * damaged, the capture is too short, or the sync mode has no fixed payload start. */
+bool radio_capture_id(const radio_capture_t *c, uint32_t *id);
+/* Damaged Manchester pairs of a capture (bit i = payload bit i), over the pairs
+ * it holds (*npairs, at most 64; 0 in sync mode 5555). */
+uint64_t radio_capture_bad(const radio_capture_t *c, int *npairs);
 void radio_clear_log(void);
 
 /* Called from the radio task for each valid packet. */
@@ -162,7 +221,7 @@ void radio_get_afc(radio_afc_t *out);
 /* Turning AFC on tunes in est_hz now (deadband and clamp apply); off goes back to freq_hz. */
 void radio_set_afc(bool on);
 
-/* Noise floor history for the idle screen, one sample per ~250 ms. */
+/* Noise floor history for the idle screen, one sample per ~500 ms. */
 int radio_rssi_history(int8_t *out, int max);
 
 /* Diagnostic: check the chip's control lines (CC1101: SPI, GDO0 and GDO2;

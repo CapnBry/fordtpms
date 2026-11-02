@@ -94,6 +94,8 @@ err manchest. 2
 err checksum  0
 err flags     0
 fifo overrun  0
+early aborts  2 (decoded right after: 0)
+status reads  1520 (reread: 3, unsettled: 0)
 irq pay/sync  2 / 2 (polled 0)
 last rssi     -83 dBm
 ```
@@ -106,7 +108,7 @@ and `rx bw` is 81250 Hz.
 | `heap free` | Current free heap, and the lowest it has been since boot |
 | `wifi` | IP address, AP signal and web UI URL; `connecting` or `off (no SSID in wifi_config.h)` otherwise. Details: [`wifi`](#wifi) |
 | chip in the header | CC1101: PARTNUM and VERSION (0x14 on genuine parts; some clones differ, which only logs a warning). The LR1121 shows GetVersion: hardware, use case (0x03 stock, 0xf3 ExpressLRS firmware) and firmware version. `NOT FOUND` if the chip didn't answer |
-| `pll` | `locked`, or `NOT LOCKED` when the radio can't tune the set frequency. Unlocked means the receiver hears nothing. The count is lock checks that failed (every 250 ms) |
+| `pll` | `locked`, or `NOT LOCKED` when the radio can't tune the set frequency. Unlocked means the receiver hears nothing. The count is lock checks that failed (CC1101: after each tune and 30 min recalibration; LR1121: every 250 ms) |
 | `chip rate` / `rx bw` / `sync` | Current [`radio`](#radio) settings. Both radios use AGC |
 | `noise floor` | Smoothed RSSI between packets, as the radio reports it. On the C3 board this includes its external LNA's gain |
 | `sync matches` | Times the radio matched the sync word `0x55 0x56`. Noise produces one roughly every 5–10 s. It climbs even with the PLL unlocked, so check `pll` too |
@@ -116,7 +118,9 @@ and `rx bw` is 81250 Hz.
 | `err checksum` | Manchester-valid but the checksum failed: a weak or colliding real packet, or a different protocol |
 | `err flags` | Checksum ok but flag bits rtl_433 rejects, or an all-zero payload |
 | `fifo overrun` | The radio FIFO overflowed (CC1101: RX FIFO overflow; LR1121: packet length error). Should stay 0 |
-| `irq pay/sync` | Payload / sync events signalled by interrupt (CC1101 GDO0 / GDO2, LR1121 IRQ line). `polled` counts events found by the 5 ms fallback poll instead. It should stay 0 when the interrupt lines work |
+| `early aborts` | CC1101 with `RADIO_EARLY_ABORT` (off by default, so 0): payloads cut at their first invalid Manchester pair, the receiver going straight back to sync search (also counted in `err manchest.`). Mostly noise syncs. *Decoded right after* counts packets caught right after one: a sensor that started on top of another packet. Always 0 on the LR1121 |
+| `status reads` | CC1101 status register reads. Each is read until two reads in a row agree (errata SWRZ020). *reread*: reads whose first two values disagreed, so it took a third or later; *unsettled*: no agreement within 5 reads (the last value is used). Also `st_reads`, `st_reread`, `st_unsettled` in `/api/state` and `/api/rflog`. Always 0 on the LR1121 |
+| `irq pay/sync` | Payload / sync events signalled by interrupt (CC1101 GDO0 / GDO2, LR1121 IRQ line). `polled` counts events found instead by a pin-level check (CC1101) or the 5 ms status poll (LR1121). It should stay 0 when the interrupt lines work |
 | `last rssi` | RSSI latched at the most recent sync match |
 | `rssi best/wst` | Best and worst RSSI of decoded packets (only shown after one has been decoded) |
 | `last packet` | Time since the last packet decoded over the air (only shown after one has been decoded) |
@@ -292,14 +296,18 @@ Strongest 2 events since boot:
 
 Strong payloads (sync RSSI >= noise + 6 dB), 4 since boot, last 4:
 2026-10-15 03:12:41  -62 dBm (noise -85) ok         <raw payload hex>
-(also at http://<ip>/api/rflog)
+
+Kept failures (likely sensor packets: see radio.h), 1 since boot, last 1:
+2026-10-15 03:12:42  -64 dBm (noise -85) manchester id 364343a4, 1/40 bad, aborted <partial hex>
+(also at http://<ip>/api/rflog and /api/pkts)
 ```
 
 | List | Contents |
 |---|---|
-| RF events | Last 48 runs of 250 ms windows whose peak RSSI was at least 12 dB above the noise floor: start (local time, or uptime before NTP), duration, peak, noise floor, and syncs/payloads/decodes during the run |
+| RF events | Last 48 runs of 500 ms windows whose peak RSSI was at least 12 dB above the noise floor: start (local time, or uptime before NTP), duration, peak, noise floor, and syncs/payloads/decodes during the run |
 | Strongest events | The 16 loudest events since boot, so a real burst isn't pushed out by later weak ones |
 | Strong payloads | Last 24 raw payloads whose sync RSSI was at least 6 dB above the noise floor, decoded or not, with the decode result |
+| Kept failures | Last 48 failed payloads that were probably sensor packets (clean but bad checksum/flags, at most 8 bad pairs, an undamaged ID, or strong and within 3 s of a decoded packet), with the ID when its pairs are clean and the damaged/held pair count. `aborted`: cut at its first bad pair by the early abort (off by default); `after abort`: arrived right after one |
 
 A strong event with no syncs means the sync word never matched (polarity or
 frequency). Syncs without decodes mean the data was wrong (bit rate,

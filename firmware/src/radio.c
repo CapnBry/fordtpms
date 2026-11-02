@@ -15,8 +15,8 @@
 
 static const char *TAG = "radio";
 
-#define HIST_PERIOD_MS 250
-#define HIST_LEN 80
+#define HIST_PERIOD_MS 500
+#define HIST_LEN 80   /* the OLED graph shows 80; the web UI the last 60 */
 
 static SemaphoreHandle_t s_lock;
 static TaskHandle_t s_task;
@@ -43,6 +43,12 @@ static int s_top_count;
 static radio_capture_t s_caps[RADIO_CAPTURES];
 static int s_cap_head, s_cap_count;
 static uint32_t s_cap_total;
+static radio_pkt_t s_pkts[RADIO_PKT_LOG];
+static int s_pkt_head, s_pkt_count;
+static uint32_t s_pkt_total;
+static radio_capture_t s_fails[RADIO_FAILS];
+static int s_fail_head, s_fail_count;
+static uint32_t s_fail_total;
 
 /* AFC (radio.h). s_afc_dirty: est moved since the last retune check. */
 static bool s_afc_on, s_afc_dirty;
@@ -166,6 +172,71 @@ static void hist_push(int dbm)
     if (s_hist_count < HIST_LEN) s_hist_count++;
 }
 
+/* Bad-pair mask over the first min(64, nbits / 2) pairs; *npairs gets that count. */
+static uint64_t bad_pairs(const uint8_t *d, int nbits, int *npairs)
+{
+    int n = nbits / 2;
+    if (n > TPMS_FORD_PAYLOAD_BITS) n = TPMS_FORD_PAYLOAD_BITS;
+    uint64_t bad = 0;
+    for (int i = 0; i < n; i++) {
+        int c1 = d[(2 * i) >> 3] >> (7 - ((2 * i) & 7)) & 1;
+        int c2 = d[(2 * i + 1) >> 3] >> (7 - ((2 * i + 1) & 7)) & 1;
+        if (c1 == c2) bad |= 1ull << i;
+    }
+    *npairs = n;
+    return bad;
+}
+
+/* Must hold s_lock. ID from the first 32 pairs, polarity of the current sync mode. */
+static bool capture_id(const radio_capture_t *c, uint32_t *id)
+{
+    if (s_cfg.sync == RADIO_SYNC_5555 || c->len < 8) return false;
+    int np;
+    if (bad_pairs(c->data, 64, &np) & 0xffffffffull) return false;
+    uint32_t v = 0;
+    for (int i = 0; i < 32; i++) {
+        int c1 = c->data[(2 * i) >> 3] >> (7 - ((2 * i) & 7)) & 1;
+        v = v << 1 | (uint32_t)(s_cfg.sync == RADIO_SYNC_AAA9 ? !c1 : c1);
+    }
+    *id = v;
+    return true;
+}
+
+/* Must hold s_lock. */
+static void fail_keep(radio_capture_t *c)
+{
+    c->flags |= RADIO_CAP_KEPT;
+    s_fails[s_fail_head] = *c;
+    s_fail_head = (s_fail_head + 1) % RADIO_FAILS;
+    if (s_fail_count < RADIO_FAILS) s_fail_count++;
+    s_fail_total++;
+}
+
+/* Must hold s_lock. Is this failed capture likely a real sensor packet? (radio.h) */
+static bool fail_worth_keeping(const radio_capture_t *c, uint32_t last_decode_ms, bool any_decode)
+{
+    if (c->status == TPMS_FORD_ERR_CHECKSUM || c->status == TPMS_FORD_ERR_FLAGS) return true;
+    if (s_cfg.sync != RADIO_SYNC_5555) {
+        int np;
+        uint64_t bad = bad_pairs(c->data, c->len * 8, &np);
+        if (np == TPMS_FORD_PAYLOAD_BITS && __builtin_popcountll(bad) <= RADIO_FAIL_BAD) return true;
+        uint32_t id;
+        if (capture_id(c, &id)) return true;
+    }
+    return any_decode && c->rssi_dbm >= c->noise_dbm + RADIO_FAIL_DB && c->ms - last_decode_ms <= RADIO_FAIL_WINDOW_MS;
+}
+
+/* Must hold s_lock. A packet decoded at sync_ms: keep the strong failures just before it. */
+static void fail_promote(uint32_t sync_ms)
+{
+    for (int i = 0; i < s_cap_count; i++) {
+        radio_capture_t *c = &s_caps[(s_cap_head - 1 - i + RADIO_CAPTURES) % RADIO_CAPTURES];
+        if (sync_ms - c->ms > RADIO_FAIL_WINDOW_MS) break;  /* newest first */
+        if (c->status == TPMS_FORD_OK || (c->flags & RADIO_CAP_KEPT)) continue;
+        if (c->rssi_dbm >= c->noise_dbm + RADIO_FAIL_DB) fail_keep(c);
+    }
+}
+
 static void handle_payload(const uint8_t *buf, int n, const radio_rx_info_t *rx, uint32_t sync_ms)
 {
     int rssi = rx->rssi_dbm;
@@ -178,6 +249,8 @@ static void handle_payload(const uint8_t *buf, int n, const radio_rx_info_t *rx,
     case RADIO_SYNC_5555: st = tpms_ford_search(buf, n * 8, &pkt); break;
     default:              st = tpms_ford_decode_chips(buf, n * 8, 0, false, &pkt); break;
     }
+    /* Cut short at a bad pair: a Manchester error, whatever the length says. */
+    if (rx->aborted) st = TPMS_FORD_ERR_MANCHESTER;
 
     if (s_raw_log || st == TPMS_FORD_OK) {
         char hex[2 * 32 + 1];
@@ -186,6 +259,8 @@ static void handle_payload(const uint8_t *buf, int n, const radio_rx_info_t *rx,
         else ESP_LOGD(TAG, "raw %s rssi=%d", hex, rssi);
     }
 
+    bool any_decode = s_stats.decoded > 0;
+    uint32_t last_decode_ms = s_stats.last_decode_ms;
     if (rssi >= s_stats.noise_dbm + RADIO_CAPTURE_DB) {
         radio_capture_t *c = &s_caps[s_cap_head];
         s_cap_head = (s_cap_head + 1) % RADIO_CAPTURES;
@@ -200,15 +275,28 @@ static void handle_payload(const uint8_t *buf, int n, const radio_rx_info_t *rx,
         c->status = (uint8_t)st;
         c->len = (uint8_t)(n < RADIO_CAPTURE_MAX ? n : RADIO_CAPTURE_MAX);
         memcpy(c->data, buf, c->len);
+        c->flags = (rx->restarted ? RADIO_CAP_RESTARTED : 0) | (rx->aborted ? RADIO_CAP_ABORTED : 0);
+        if (st != TPMS_FORD_OK && fail_worth_keeping(c, last_decode_ms, any_decode)) fail_keep(c);
     }
 
     switch (st) {
-    case TPMS_FORD_OK:
+    case TPMS_FORD_OK: {
         s_stats.decoded++;
         s_stats.last_decode_ms = sync_ms;
+        if (rx->restarted) s_stats.abort_decodes++;
+        fail_promote(sync_ms);
+        radio_pkt_t *l = &s_pkts[s_pkt_head];
+        s_pkt_head = (s_pkt_head + 1) % RADIO_PKT_LOG;
+        if (s_pkt_count < RADIO_PKT_LOG) s_pkt_count++;
+        s_pkt_total++;
+        *l = (radio_pkt_t){.ms = sync_ms, .id = pkt.id, .code = {pkt.raw[4], pkt.raw[5], pkt.raw[6]},
+                           .rssi_dbm = (int8_t)rssi, .noise_dbm = (int8_t)s_stats.noise_dbm, .lqi = rx->lqi,
+                           .flags = (rx->quality ? RADIO_PKT_QUALITY : 0) | (rx->restarted ? RADIO_CAP_RESTARTED : 0),
+                           .freq_off_hz = rx->freq_off_hz, .afc_hz = s_afc_applied_hz};
         if (s_stats.decoded == 1 || rssi > s_stats.best_rssi_dbm) s_stats.best_rssi_dbm = (int16_t)rssi;
         if (s_stats.decoded == 1 || rssi < s_stats.worst_rssi_dbm) s_stats.worst_rssi_dbm = (int16_t)rssi;
         break;
+    }
     case TPMS_FORD_ERR_MANCHESTER: {
         s_stats.err_manchester++;
         /* Fixed-position modes only: the 5555 search has no single payload start. */
@@ -250,7 +338,7 @@ static void radio_task(void *arg)
 
     for (;;) {
         uint32_t bits = 0;
-        xTaskNotifyWait(0, UINT32_MAX, &bits, pdMS_TO_TICKS(5));
+        xTaskNotifyWait(0, UINT32_MAX, &bits, pdMS_TO_TICKS(hw_poll_ms));
 
         xSemaphoreTake(s_lock, portMAX_DELAY);
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
@@ -277,7 +365,8 @@ static void radio_task(void *arg)
                 s_stats.last_rssi_dbm = (int16_t)pkt_rssi;
             }
             radio_rx_info_t rx = {.rssi_dbm = pkt_rssi, .quality = p.payload_quality,
-                                  .freq_off_hz = p.payload_freq_off_hz, .lqi = p.payload_lqi};
+                                  .freq_off_hz = p.payload_freq_off_hz, .lqi = p.payload_lqi,
+                                  .restarted = p.payload_restarted, .aborted = p.payload_aborted};
             handle_payload(p.payload, p.payload_len, &rx, sync_ms);
         }
         if (s_afc_dirty && now - s_afc_last_ms >= RADIO_AFC_QUIET_MS) {
@@ -459,6 +548,43 @@ int radio_get_captures(radio_capture_t *out, int max, uint32_t *total)
     return n;
 }
 
+int radio_get_packets(radio_pkt_t *out, int max, uint32_t *total)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int n = s_pkt_count < max ? s_pkt_count : max;
+    for (int i = 0; i < n; i++) out[i] = s_pkts[(s_pkt_head - n + i + RADIO_PKT_LOG) % RADIO_PKT_LOG];
+    if (total) *total = s_pkt_total;
+    xSemaphoreGive(s_lock);
+    return n;
+}
+
+int radio_get_fails(radio_capture_t *out, int max, uint32_t *total)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int n = s_fail_count < max ? s_fail_count : max;
+    for (int i = 0; i < n; i++) out[i] = s_fails[(s_fail_head - n + i + RADIO_FAILS) % RADIO_FAILS];
+    if (total) *total = s_fail_total;
+    xSemaphoreGive(s_lock);
+    return n;
+}
+
+bool radio_capture_id(const radio_capture_t *c, uint32_t *id)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool ok = capture_id(c, id);
+    xSemaphoreGive(s_lock);
+    return ok;
+}
+
+uint64_t radio_capture_bad(const radio_capture_t *c, int *npairs)
+{
+    if (s_cfg.sync == RADIO_SYNC_5555) {
+        *npairs = 0;
+        return 0;
+    }
+    return bad_pairs(c->data, c->len * 8, npairs);
+}
+
 int radio_get_top_events(radio_event_t *out, int max)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -478,8 +604,8 @@ int radio_get_top_events(radio_event_t *out, int max)
 void radio_clear_log(void)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_ev_count = s_cap_count = s_top_count = 0;
-    s_ev_total = s_cap_total = 0;
+    s_ev_count = s_cap_count = s_top_count = s_pkt_count = s_fail_count = 0;
+    s_ev_total = s_cap_total = s_pkt_total = s_fail_total = 0;
     xSemaphoreGive(s_lock);
 }
 

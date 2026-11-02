@@ -2,21 +2,41 @@
  * CC1101 backend: 2-FSK packet mode, 26 MHz crystal.
  *
  * GDO2 asserts on sync word received (RSSI is frozen there), GDO0 at the end
- * of a packet (RX FIFO threshold set above the packet size). The radio task
- * also polls PKTSTATUS/RXBYTES every ~5 ms, so a missed edge only costs
- * latency. After a packet the chip stays in RX (MCSM1.RXOFF_MODE), so
- * back-to-back frames are not missed; each payload carries the appended RSSI
- * and LQI status bytes. FREQEST (the frequency offset compensation loop's
- * estimate) is read when the sync word is seen: the loop has settled on the
- * preamble by then, and after the packet it drifts off on noise again.
+ * of a packet (RX FIFO threshold set above the packet size). Reception is
+ * driven by those interrupts alone; the radio task also checks both pin
+ * levels (no SPI) when it wakes, so a missed edge only costs latency. Quiet
+ * wakeups, every hw_poll_ms, take one RSSI sample. Each payload carries the
+ * appended RSSI and LQI status bytes.
+ *
+ * Quiet reception: SPI traffic while a packet is arriving corrupts it. On
+ * 2026-11-01 three sensors at -65..-74 dBm (25 dB over the noise) lost every
+ * packet with the damage in payload chips 0..7, right where the radio task
+ * read status registers after the sync interrupt; a -55 dBm sensor decoded
+ * through it. So once GDO2 shows a packet in progress the task sleeps,
+ * touching only the GDO2 pin, until GDO2 falls at the end of the packet. The
+ * chip then goes IDLE (MCSM1.RXOFF_MODE) which freezes FREQEST (the frequency
+ * offset loop's estimate; in RX it would drift off on noise), the task reads
+ * the FIFO and FREQEST, and restarts RX without recalibrating (~75 us).
+ *
+ * Early abort (RADIO_EARLY_ABORT, off: it reads the FIFO during the packet,
+ * see above): while a packet is on the air the chip does not look for a new
+ * sync word, so a stronger sensor that starts mid-packet is lost along with
+ * the first, and a false sync on noise leaves the receiver deaf for a whole
+ * payload. (RSSI cannot show the second transmitter: the RSSI readout is
+ * frozen from the sync word until RX is re-entered, datasheet 17.3.) So the
+ * radio task reads the payload out of the FIFO as it arrives and checks each
+ * Manchester pair. The first invalid pair (00 or 11) means the packet is lost
+ * anyway (no error correction), so the chip goes IDLE -> RX right away,
+ * without recalibrating (~75 us instead of ~800), and may still catch the
+ * newcomer's sync word. The partial payload goes up as an aborted capture.
  *
  * Chip select is driven in software: the CC1101 needs SO low (crystal running)
  * after CSn falls before the first clock edge, and only a GPIO CS can wait for
  * that. The data lines use the VSPI IO_MUX pins.
  *
  * PLL lock: after calibration FSCAL1 reads 0x3F if the synthesizer could not
- * lock (datasheet section 22.1). It is checked after each retune and every
- * RADIO_LOCK_CHECK_MS while receiving. The CC1101 is specified for 300-348,
+ * lock (datasheet section 22.1). It is checked after each retune and each
+ * RADIO_RECAL_MS recalibration (the only times the chip calibrates). The CC1101 is specified for 300-348,
  * 387-464 and 779-928 MHz; 315 MHz is in band.
  */
 #include <string.h>
@@ -117,10 +137,30 @@ static const char *TAG = "cc1101";
 
 #define FXOSC 26000000ULL
 #define RSSI_OFFSET 74       /* datasheet table 31, 315/433 MHz */
-#define RADIO_LOCK_CHECK_MS 250
 /* The synthesizer is calibrated on IDLE -> RX only; staying in RX for hours
- * needs a periodic recalibration to follow temperature drift. */
-#define RADIO_RECAL_MS 60000
+ * needs a periodic recalibration to follow temperature drift. The lock is
+ * checked after each tune and recalibration, never polled. */
+#define RADIO_RECAL_MS (30 * 60 * 1000)
+#define RADIO_RELOCK_MS 1000           /* retry interval while the lock fails */
+#define MCSM0_AUTOCAL  0x18   /* calibrate IDLE -> RX/TX, PO_TIMEOUT 149 us */
+#define MCSM0_NOCAL    0x08   /* same, without the calibration */
+/* The payload watch gives up this long after the packet's expected end. */
+#define WATCH_SLACK_US 2000
+/* A packet completed within this long of a restart is marked restarted. */
+#define RESTART_MARK_MS 20
+/* 1: read packets as they arrive and abort at the first bad Manchester pair.
+ * 0: no SPI traffic while a packet is on the air (see the top of the file). */
+#ifndef RADIO_EARLY_ABORT
+#define RADIO_EARLY_ABORT 0
+#endif
+#if RADIO_EARLY_ABORT
+#define MCSM1_RX 0x3C                  /* stay in RX after a packet, IDLE after TX */
+#else
+#define MCSM1_RX 0x30                  /* IDLE after a packet (FREQEST holds) and after TX */
+#endif
+
+/* Quiet radio task wakeups: one RSSI sample each, nothing else on the bus. */
+const uint32_t hw_poll_ms = 100;
 
 const radio_caps_t radio_hw_caps = {
     .name = "CC1101",
@@ -140,7 +180,12 @@ static radio_config_t s_cfg;       /* last applied, for the probe */
 static uint8_t s_payload_len = TPMS_FORD_CHIP_BYTES;
 static bool s_in_packet, s_locked, s_spi_timeout;
 static int8_t s_sync_freqest;
-static uint32_t s_sync_ms, s_lock_check_ms, s_recal_ms;
+static uint32_t s_sync_ms, s_recal_ms, s_restart_ms;
+static int64_t s_sync_us;
+#if RADIO_EARLY_ABORT
+static int s_sync_rssi;
+#endif
+static bool s_restart_pending;
 static uint32_t s_rx_restarts, s_recals;
 
 /* ------------------------------------------------------------- SPI ----- */
@@ -185,14 +230,22 @@ static uint8_t rd(uint8_t reg)
 
 /* Status register. Read until two reads agree: a value changing during the
  * read can come back corrupted (errata SWRZ020, SPI read synchronization). */
+static uint32_t s_status_reads, s_status_rereads, s_status_unsettled;
+
 static uint8_t rd_status(uint8_t reg)
 {
     uint8_t v = rd(reg | BURST), prev;
+    s_status_reads++;
     for (int i = 0; i < 4; i++) {
         prev = v;
         v = rd(reg | BURST);
-        if (v == prev) break;
+        if (v == prev) {
+            if (i > 0) s_status_rereads++;
+            return v;
+        }
     }
+    s_status_rereads++;
+    s_status_unsettled++;
     return v;
 }
 
@@ -265,6 +318,110 @@ static void enter_rx(void)
     wait_state(MARC_RX, 3000);
     s_in_packet = false;
 }
+
+/* Back to sync search right away: IDLE -> RX on the current calibration. */
+static void restart_rx_nocal(void)
+{
+    strobe(SIDLE);
+    wait_state(MARC_IDLE, 500);
+    wr(REG_MCSM0, MCSM0_NOCAL);
+    strobe(SFRX);
+    strobe(SRX);
+    wait_state(MARC_RX, 1000);
+    wr(REG_MCSM0, MCSM0_AUTOCAL);      /* only read on the next IDLE -> RX */
+    s_in_packet = false;
+}
+
+#if RADIO_EARLY_ABORT
+static bool manchester_ok(uint8_t b)
+{
+    for (int k = 0; k < 8; k += 2) {
+        uint8_t pair = (b >> k) & 3;
+        if (pair == 0 || pair == 3) return false;
+    }
+    return true;
+}
+/*
+ * Called once a sync word is seen: reads the packet out of the FIFO as it
+ * arrives, through the appended RSSI/LQI bytes, into o. Returns false when the
+ * packet ends normally (o filled as a complete payload). On the first bad
+ * Manchester pair (fixed-position sync modes only) it restarts the receiver
+ * and returns true with the partial payload (payload_aborted). If the packet
+ * never completes, o gets what arrived (a short payload) and RX restarts.
+ */
+static bool watch_packet(radio_hw_poll_t *o, radio_stats_t *st, uint32_t now)
+{
+    uint8_t buf[32 + 2];
+    int need = s_payload_len + 2, got = 0;
+    bool check = s_cfg.sync != RADIO_SYNC_5555;  /* 5555: payload start unknown */
+    int64_t airtime_us = (int64_t)s_payload_len * 8 * 1000000 / (s_cfg.bitrate ? s_cfg.bitrate : 19231);
+    int64_t deadline = s_sync_us + airtime_us + WATCH_SLACK_US;
+    bool bad = false;
+    while (got < need) {
+        uint8_t rxb = rd_status(ST_RXBYTES);
+        if (rxb & RXBYTES_OVERFLOW) break;
+        int n = rxb & 0x7f;
+        /* Never empty the FIFO while the packet is still arriving (errata SWRZ020). */
+        if (got + n < need) n--;
+        if (n > need - got) n = need - got;
+        if (n > 0) {
+            rd_burst(REG_FIFO, buf + got, n);
+            for (int i = got; i < got + n && i < s_payload_len && check; i++)
+                if (!manchester_ok(buf[i])) { bad = true; got = i + 1; break; }
+            if (bad) break;
+            got += n;
+            continue;
+        }
+        if (esp_timer_get_time() > deadline) break;
+    }
+
+    o->payload_rssi_valid = true;
+    o->payload_quality = true;
+    o->payload_freq_off_hz = freqest_hz(s_sync_freqest);
+    s_in_packet = false;
+    if (got == need) {
+        memcpy(o->payload, buf, s_payload_len);
+        o->payload_len = s_payload_len;
+        o->payload_rssi_dbm = rssi_from_raw(buf[s_payload_len]);  /* appended: RSSI at sync */
+        o->payload_lqi = buf[s_payload_len + 1] & 0x7f;           /* bit 7 is CRC_OK (unused) */
+        if (s_restart_pending && now - s_restart_ms <= RESTART_MARK_MS) o->payload_restarted = true;
+        s_restart_pending = false;
+        return false;
+    }
+    /* Aborted on a bad pair, or never completed (overflow, packet dropped). */
+    if (got > s_payload_len) got = s_payload_len;
+    memcpy(o->payload, buf, got);
+    o->payload_len = got;
+    o->payload_rssi_dbm = s_sync_rssi;
+    o->payload_lqi = 127;              /* unknown: the chip appends LQI only to complete packets */
+    o->payload_aborted = bad;
+    if (bad) {
+        restart_rx_nocal();
+        st->rx_aborts++;
+        s_restart_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        s_restart_pending = true;
+    } else {
+        if (rd_status(ST_RXBYTES) & RXBYTES_OVERFLOW) st->fifo_overruns++;
+        enter_rx();
+    }
+    return true;
+}
+#else
+/*
+ * Sleeps with the SPI bus idle while GDO2 shows a packet arriving (sync word
+ * .. end of packet), at most one packet's airtime plus slack. Only the GDO2
+ * pin is read. Returns true if a packet was in progress.
+ */
+static bool wait_packet_end(void)
+{
+    if (!gpio_get_level(PIN_CC1101_GDO2)) return false;
+    int64_t t0 = esp_timer_get_time();
+    int64_t limit = (int64_t)s_payload_len * 8 * 1000000 / (s_cfg.bitrate ? s_cfg.bitrate : 19231) + WATCH_SLACK_US;
+    s_sync_us = t0;
+    while (gpio_get_level(PIN_CC1101_GDO2) && esp_timer_get_time() - t0 < limit) vTaskDelay(1);
+    return true;
+}
+#endif
 
 /* --------------------------------------------------------- config ------ */
 
@@ -402,8 +559,8 @@ esp_err_t hw_apply(const radio_config_t *cfg, bool *locked)
     wr(REG_MDMCFG0, 0xF8);
     wr(REG_DEVIATN, deviatn_code(35000));  /* TX only in 2-FSK: the sensors use ~35 kHz */
     wr(REG_MCSM2, 0x07);
-    wr(REG_MCSM1, 0x3C);               /* stay in RX after a packet, IDLE after TX */
-    wr(REG_MCSM0, 0x18);               /* calibrate IDLE -> RX/TX, PO_TIMEOUT 149 us */
+    wr(REG_MCSM1, MCSM1_RX);
+    wr(REG_MCSM0, MCSM0_AUTOCAL);
     wr(REG_FOCCFG, 0x16);              /* frequency offset compensation +/-BW/4: sensor crystal error */
     wr(REG_BSCFG, 0x6C | (cfg->drate_comp & 3));  /* BS_LIMIT: data rate offset tracking range */
     wr(REG_AGCCTRL2, 0x43);
@@ -421,7 +578,7 @@ esp_err_t hw_apply(const radio_config_t *cfg, bool *locked)
     uint8_t fscal1, m;
     s_locked = check_lock(true, &fscal1, &m);
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-    s_lock_check_ms = s_recal_ms = now;
+    s_recal_ms = now;
     ESP_LOGD(TAG, "tuned %.3f MHz: FSCAL1 0x%02x, MARCSTATE 0x%02x", cfg->freq_hz / 1e6, fscal1, m);
     *locked = s_locked;
     return s_spi_timeout ? ESP_ERR_TIMEOUT : ESP_OK;
@@ -453,31 +610,51 @@ void hw_poll(uint32_t bits, uint32_t now, radio_hw_poll_t *o, radio_stats_t *st)
     if (bits & RADIO_NOTIFY_PAYLOAD) st->irq_payload++;
     if (bits & RADIO_NOTIFY_SYNC) st->irq_sync++;
 
-    uint8_t pkt = rd_status(ST_PKTSTATUS);
-    uint8_t rxb = rd_status(ST_RXBYTES);
-
-    if (rxb & RXBYTES_OVERFLOW) {
-        st->fifo_overruns++;
-        enter_rx();
-    } else {
-        if ((pkt & PKTSTATUS_SFD) && !s_in_packet) {
-            o->sync = true;
-            o->sync_rssi_dbm = rssi_from_raw(rd_status(ST_RSSI));  /* frozen at the sync word */
-            s_sync_freqest = (int8_t)rd_status(ST_FREQEST);
-            s_sync_ms = now;
-            s_in_packet = true;
-            if (!(bits & RADIO_NOTIFY_SYNC)) st->polled_events++;
+    /* Interrupt driven, no status polling: GDO2 is high from the sync word to
+     * the end of the packet, GDO0 while a packet waits in the FIFO. The pins
+     * cost no SPI traffic; checking their levels also covers a missed edge. */
+    bool arriving = gpio_get_level(PIN_CC1101_GDO2);
+    if ((bits & RADIO_NOTIFY_SYNC) || arriving) {
+        o->sync = true;
+        s_sync_ms = now;
+#if RADIO_EARLY_ABORT
+        s_sync_us = esp_timer_get_time();
+        o->sync_rssi_dbm = s_sync_rssi = rssi_from_raw(rd_status(ST_RSSI));  /* frozen at the sync word */
+        s_sync_freqest = (int8_t)rd_status(ST_FREQEST);
+        s_in_packet = true;
+        if (!(bits & RADIO_NOTIFY_SYNC)) st->polled_events++;
+        watch_packet(o, st, now);      /* reads the whole packet (or its aborted start) */
+        o->locked = s_locked;
+        return;
+#else
+        if (!(bits & RADIO_NOTIFY_SYNC)) st->polled_events++;
+        wait_packet_end();             /* no SPI until the packet is in */
+        if (gpio_get_level(PIN_CC1101_GDO2)) {
+            enter_rx();                /* longer than any packet: stuck, start over */
+            o->locked = s_locked;
+            return;
         }
-        if ((rxb & 0x7f) >= s_payload_len + 2) {
+#endif
+    }
+
+    /* GDO0 falls when the FIFO is empty, so a payload edge for a packet
+     * already read (it fired during the wait above) costs no SPI either. */
+    if (o->sync || gpio_get_level(PIN_CC1101_GDO0)) {
+        if (!(bits & RADIO_NOTIFY_PAYLOAD) && !o->sync) st->polled_events++;
+        uint8_t rxb = rd_status(ST_RXBYTES);
+        if (rxb & RXBYTES_OVERFLOW) {
+            st->fifo_overruns++;
+            enter_rx();
+        } else if ((rxb & 0x7f) >= s_payload_len + 2) {
             uint8_t buf[32 + 2];
             rd_burst(REG_FIFO, buf, s_payload_len + 2);
-            if (!s_in_packet) {
-                /* Sync and end of packet both fell between two polls. */
-                o->sync = true;
-                o->sync_rssi_dbm = rssi_from_raw(buf[s_payload_len]);
-                s_sync_freqest = (int8_t)rd_status(ST_FREQEST);  /* late: may have moved since the packet */
-            }
-            if (!(bits & RADIO_NOTIFY_PAYLOAD)) st->polled_events++;
+#if RADIO_EARLY_ABORT
+            if (!o->sync) s_sync_freqest = (int8_t)rd_status(ST_FREQEST);  /* late: may have moved */
+#else
+            s_sync_freqest = (int8_t)rd_status(ST_FREQEST);  /* frozen: the chip went IDLE at the end */
+#endif
+            o->sync = true;
+            o->sync_rssi_dbm = rssi_from_raw(buf[s_payload_len]);
             memcpy(o->payload, buf, s_payload_len);
             o->payload_len = s_payload_len;
             o->payload_rssi_valid = true;
@@ -485,40 +662,42 @@ void hw_poll(uint32_t bits, uint32_t now, radio_hw_poll_t *o, radio_stats_t *st)
             o->payload_quality = true;
             o->payload_freq_off_hz = freqest_hz(s_sync_freqest);
             o->payload_lqi = buf[s_payload_len + 1] & 0x7f;  /* appended; bit 7 is CRC_OK (unused) */
-            /* The next packet's sync may already be in; the next poll sees SFD again. */
+            if (s_restart_pending && now - s_restart_ms <= RESTART_MARK_MS) o->payload_restarted = true;
+            s_restart_pending = false;
+#if !RADIO_EARLY_ABORT
+            restart_rx_nocal();        /* IDLE after the packet: back to sync search */
+#endif
             s_in_packet = false;
-        } else if (s_in_packet && !(pkt & PKTSTATUS_SFD) && (rxb & 0x7f) == 0) {
-            s_in_packet = false;       /* packet dropped by the chip */
-        } else if (s_in_packet && now - s_sync_ms > 50) {
-            /* A 16 byte payload takes ~7 ms; don't stay stuck. */
+        } else if ((rxb & 0x7f) > 0) {
+            /* Part of a packet with none arriving: the chip may have stopped
+             * in IDLE. Start over. */
             enter_rx();
-        } else if (!s_in_packet) {
-            o->idle = true;
-            o->idle_rssi_dbm = rssi_from_raw(rd_status(ST_RSSI));
         }
-    }
+    } else if (!bits) {
+        /* Quiet timeout (every hw_poll_ms): one RSSI sample for the noise floor. */
+        o->idle = true;
+        o->idle_rssi_dbm = rssi_from_raw(rd_status(ST_RSSI));
 
-    if (!s_in_packet && (rxb & 0x7f) == 0 && now - s_recal_ms >= RADIO_RECAL_MS) {
-        s_recal_ms = now;
-        s_recals++;
-        enter_rx();                    /* IDLE -> RX recalibrates (~0.8 ms deaf) */
-        s_lock_check_ms = 0;           /* check the new calibration right away */
-    }
-
-    if (now - s_lock_check_ms >= RADIO_LOCK_CHECK_MS) {
-        s_lock_check_ms = now;
-        s_spi_timeout = false;
-        uint8_t m;
-        bool locked = check_lock(true, NULL, &m);
-        if (!locked) {
-            st->pll_unlocked_polls++;
-            /* Retry: back to RX with a fresh calibration; the next check sees the result. */
+        if (now - s_recal_ms >= RADIO_RECAL_MS) {
+            /* Recalibrate for temperature drift (~0.8 ms deaf), then check the lock. */
+            s_recal_ms = now;
+            s_recals++;
             enter_rx();
-            s_rx_restarts++;
+            s_spi_timeout = false;
+            s_locked = check_lock(true, NULL, NULL);
+            if (!s_locked) {
+                st->pll_unlocked_polls++;
+                s_rx_restarts++;
+                s_recal_ms = now - RADIO_RECAL_MS + RADIO_RELOCK_MS;  /* retry soon */
+            }
         }
-        s_locked = locked;
     }
     o->locked = s_locked;
+    /* Hand over the read counts since the last poll (stats resets then work). */
+    st->status_reads += s_status_reads;
+    st->status_rereads += s_status_rereads;
+    st->status_unsettled += s_status_unsettled;
+    s_status_reads = s_status_rereads = s_status_unsettled = 0;
 }
 
 /* ------------------------------------------------------------ init ----- */

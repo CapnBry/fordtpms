@@ -100,6 +100,9 @@ static const char *TAG = "lr1121";
 
 #define RADIO_LOCK_CHECK_MS 250
 
+/* Status polling between IRQs, as before the CC1101 went interrupt-only. */
+const uint32_t hw_poll_ms = 5;
+
 const radio_caps_t radio_hw_caps = {
     .name = "LR1121",
     .freq_min_hz = 150000000,
