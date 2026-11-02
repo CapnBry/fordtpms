@@ -202,6 +202,40 @@ static bool capture_id(const radio_capture_t *c, uint32_t *id)
     return true;
 }
 
+/* Must hold s_lock. A damaged ID close to one sensor in the packet log
+ * (radio.h, RADIO_NEAR_CHIPS): compares the first 64 chips with each logged
+ * sensor's Manchester-coded ID, in the polarity of the sync mode. */
+static bool capture_near_id(const radio_capture_t *c, uint32_t *id, int *chips)
+{
+    if (s_cfg.sync == RADIO_SYNC_5555 || c->len < 8) return false;
+    uint64_t got = 0;
+    for (int i = 0; i < 8; i++) got = got << 8 | c->data[i];
+    bool inv = s_cfg.sync == RADIO_SYNC_AAA9;
+    uint32_t best_id = 0;
+    int best = 65, second = 65;
+    for (int k = 0; k < s_pkt_count; k++) {
+        uint32_t cand = s_pkts[(s_pkt_head - 1 - k + RADIO_PKT_LOG) % RADIO_PKT_LOG].id;
+        if (best <= 64 && cand == best_id) continue;
+        uint64_t want = 0;
+        for (int b = 31; b >= 0; b--) {
+            int c1 = (int)((cand >> b) & 1) ^ inv;
+            want = want << 2 | (uint64_t)(c1 << 1 | !c1);
+        }
+        int d = __builtin_popcountll(got ^ want);
+        if (d < best) {
+            if (cand != best_id) second = best;
+            best = d;
+            best_id = cand;
+        } else if (d < second && cand != best_id) {
+            second = d;
+        }
+    }
+    if (best > RADIO_NEAR_CHIPS || second - best < RADIO_NEAR_MARGIN) return false;
+    *id = best_id;
+    *chips = best;
+    return true;
+}
+
 /* Must hold s_lock. */
 static void fail_keep(radio_capture_t *c)
 {
@@ -222,6 +256,7 @@ static bool fail_worth_keeping(const radio_capture_t *c, uint32_t last_decode_ms
         if (np == TPMS_FORD_PAYLOAD_BITS && __builtin_popcountll(bad) <= RADIO_FAIL_BAD) return true;
         uint32_t id;
         if (capture_id(c, &id)) return true;
+        if (c->flags & RADIO_CAP_NEAR) return true;
     }
     return any_decode && c->rssi_dbm >= c->noise_dbm + RADIO_FAIL_DB && c->ms - last_decode_ms <= RADIO_FAIL_WINDOW_MS;
 }
@@ -276,6 +311,15 @@ static void handle_payload(const uint8_t *buf, int n, const radio_rx_info_t *rx,
         c->len = (uint8_t)(n < RADIO_CAPTURE_MAX ? n : RADIO_CAPTURE_MAX);
         memcpy(c->data, buf, c->len);
         c->flags = (rx->restarted ? RADIO_CAP_RESTARTED : 0) | (rx->aborted ? RADIO_CAP_ABORTED : 0);
+        c->near_id = 0;
+        c->near_chips = 0;
+        uint32_t id;
+        int chips;
+        if (st != TPMS_FORD_OK && !capture_id(c, &id) && capture_near_id(c, &id, &chips)) {
+            c->flags |= RADIO_CAP_NEAR;
+            c->near_id = id;
+            c->near_chips = (uint8_t)chips;
+        }
         if (st != TPMS_FORD_OK && fail_worth_keeping(c, last_decode_ms, any_decode)) fail_keep(c);
     }
 
@@ -368,6 +412,9 @@ static void radio_task(void *arg)
                                   .freq_off_hz = p.payload_freq_off_hz, .lqi = p.payload_lqi,
                                   .restarted = p.payload_restarted, .aborted = p.payload_aborted};
             handle_payload(p.payload, p.payload_len, &rx, sync_ms);
+            /* The packet's own level (sync RSSI, already read with the FIFO):
+             * the idle samples mostly fall between a burst's packets. */
+            if (pkt_rssi > hist_max) hist_max = pkt_rssi;
         }
         if (s_afc_dirty && now - s_afc_last_ms >= RADIO_AFC_QUIET_MS) {
             /* The burst is over: retune between packets, never during one. */
@@ -381,7 +428,7 @@ static void radio_task(void *arg)
         }
 
         if (now - hist_t0 >= HIST_PERIOD_MS) {
-            if (noise_n) {
+            if (noise_n || hist_max > -128) {
                 hist_push(hist_max);
                 bool loud = noise_ema_x16 != -120 * 16 && hist_max >= s_stats.noise_dbm + RADIO_EVENT_DB;
                 if (loud && !ev) {
@@ -410,10 +457,12 @@ static void radio_task(void *arg)
                 /* Noise floor: seeded by the first window, then fast from quiet
                  * windows and very slow from loud ones, so bursts barely move it
                  * but a lasting change in the noise is still followed. */
-                int avg_x16 = noise_acc * 16 / noise_n;
-                if (noise_ema_x16 == -120 * 16) noise_ema_x16 = avg_x16;
-                else noise_ema_x16 += (avg_x16 - noise_ema_x16) / (loud ? 64 : 4);
-                s_stats.noise_dbm = (int16_t)(noise_ema_x16 / 16);
+                if (noise_n) {         /* idle samples only: packets don't raise the floor */
+                    int avg_x16 = noise_acc * 16 / noise_n;
+                    if (noise_ema_x16 == -120 * 16) noise_ema_x16 = avg_x16;
+                    else noise_ema_x16 += (avg_x16 - noise_ema_x16) / (loud ? 64 : 4);
+                    s_stats.noise_dbm = (int16_t)(noise_ema_x16 / 16);
+                }
             }
             win_syncs = s_stats.syncs;
             win_payloads = s_stats.payloads;

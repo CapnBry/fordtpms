@@ -436,8 +436,10 @@ static int cmd_rflog(int argc, char **argv)
         int np;
         uint64_t bad = radio_capture_bad(&fails[i], &np);
         uint32_t id;
-        char ids[12] = "--------";
+        char ids[16] = "--------";
         if (radio_capture_id(&fails[i], &id)) snprintf(ids, sizeof(ids), "%08x", (unsigned)id);
+        else if (fails[i].flags & RADIO_CAP_NEAR)  /* ~: damaged, closest logged sensor */
+            snprintf(ids, sizeof(ids), "~%08x/%u", (unsigned)fails[i].near_id, fails[i].near_chips);
         printf("%-19s %4d dBm (noise %d) %-10s id %s, %d/%d bad%s%s %s\n", when, fails[i].rssi_dbm,
                fails[i].noise_dbm, tpms_ford_status_str((tpms_ford_status_t)fails[i].status), ids,
                __builtin_popcountll(bad), np, fails[i].flags & RADIO_CAP_ABORTED ? ", aborted" : "",

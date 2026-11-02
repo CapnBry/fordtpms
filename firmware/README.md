@@ -456,7 +456,10 @@ The MQTT and mDNS clients come from the ESP-IDF component registry
   unattended run. It holds these RAM-only lists:
   * **RF events**: runs of 500 ms windows whose peak RSSI was at least 12 dB
     above the noise floor, with the syncs, payloads and decodes during each
-    run (last 48)
+    run (last 48). A window's peak includes the sync RSSI of each packet in
+    it (read with the packet, no extra SPI), since the 100 ms idle samples
+    mostly fall between a burst's packets; the noise floor uses only the idle
+    samples
   * **Strongest events**: the 16 loudest since boot, so a real burst isn't
     pushed out by later weak ones
   * **Strong payloads**: raw bytes of every payload whose sync RSSI was at
@@ -470,8 +473,11 @@ The MQTT and mDNS clients come from the ESP-IDF component registry
   * **Kept failures** (last 48, `rflog` and `/api/pkts`): failed payloads that
     were probably sensor packets, in their own list so noise can't push them
     out: Manchester-clean but with a bad checksum or flags, at most 8 bad
-    pairs, an undamaged ID (first 32 pairs), or at least 12 dB above the noise
-    and within 3 s of a decoded packet (a collision in the same round).
+    pairs, an undamaged ID (first 32 pairs), a damaged ID within 12 of its 64
+    chips of a sensor in the packet log and at least 3 chips closer than to
+    any other (labelled with that ID and the chip count; noise averages 32),
+    or at least 12 dB above the noise and within 3 s of a decoded packet (a
+    collision in the same round).
   * **Packet log** (last 128 decoded packets, `/api/pkts` and the web UI's
     packet history): time, RSSI, noise, frequency offset, AFC overlay, LQI and
     the reading of each packet.

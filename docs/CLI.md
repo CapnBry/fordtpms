@@ -311,10 +311,10 @@ Kept failures (likely sensor packets: see radio.h), 1 since boot, last 1:
 
 | List | Contents |
 |---|---|
-| RF events | Last 48 runs of 500 ms windows whose peak RSSI was at least 12 dB above the noise floor: start (local time, or uptime before NTP), duration, peak, noise floor, and syncs/payloads/decodes during the run |
+| RF events | Last 48 runs of 500 ms windows whose peak RSSI (idle samples and the sync RSSI of packets) was at least 12 dB above the noise floor: start (local time, or uptime before NTP), duration, peak, noise floor, and syncs/payloads/decodes during the run |
 | Strongest events | The 16 loudest events since boot, so a real burst isn't pushed out by later weak ones |
 | Strong payloads | Last 24 raw payloads whose sync RSSI was at least 6 dB above the noise floor, decoded or not, with the decode result |
-| Kept failures | Last 48 failed payloads that were probably sensor packets (clean but bad checksum/flags, at most 8 bad pairs, an undamaged ID, or strong and within 3 s of a decoded packet), with the ID when its pairs are clean and the damaged/held pair count. `aborted`: cut at its first bad pair by the early abort (off by default); `after abort`: arrived right after one |
+| Kept failures | Last 48 failed payloads that were probably sensor packets (clean but bad checksum/flags, at most 8 bad pairs, an undamaged ID, a damaged ID within 12 of 64 chips of a logged sensor's, or strong and within 3 s of a decoded packet), with the ID when its pairs are clean (`~<id>/<n>` when it is damaged but n chips from a logged sensor's) and the damaged/held pair count. `aborted`: cut at its first bad pair by the early abort (off by default); `after abort`: arrived right after one |
 
 A strong event with no syncs means the sync word never matched (polarity or
 frequency). Syncs without decodes mean the data was wrong (bit rate,

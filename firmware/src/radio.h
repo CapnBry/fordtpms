@@ -130,7 +130,10 @@ typedef struct {
  * kept when it is likely a real sensor packet:
  *  - its payload is Manchester-clean but wrong (checksum or flag errors),
  *  - it has at most RADIO_FAIL_BAD damaged pairs,
- *  - its first 32 pairs (the sensor ID) are clean, or
+ *  - its first 32 pairs (the sensor ID) are clean,
+ *  - its first 64 chips are within RADIO_NEAR_CHIPS chip errors of the ID of
+ *    a sensor in the packet log, at least RADIO_NEAR_MARGIN closer than to
+ *    any other logged sensor (RADIO_CAP_NEAR: near_id, near_chips), or
  *  - it is at least RADIO_FAIL_DB above the noise and within
  *    RADIO_FAIL_WINDOW_MS before or after a decoded packet (a collision with
  *    another sensor of the same round).
@@ -140,10 +143,13 @@ typedef struct {
 #define RADIO_FAIL_BAD       8
 #define RADIO_FAIL_DB        12
 #define RADIO_FAIL_WINDOW_MS 3000
+#define RADIO_NEAR_CHIPS     12    /* of 64; noise averages 32 */
+#define RADIO_NEAR_MARGIN    3
 #define RADIO_CAP_RESTARTED 0x01   /* radio_capture_t.flags / radio_pkt_t.flags: see radio_rx_info_t.restarted */
 #define RADIO_CAP_ABORTED   0x02   /* see radio_rx_info_t.aborted: data holds the payload up to the bad pair */
 #define RADIO_CAP_KEPT      0x04   /* also copied to the failure ring */
 #define RADIO_PKT_QUALITY   0x08   /* radio_pkt_t: freq_off_hz and lqi are valid */
+#define RADIO_CAP_NEAR      0x10   /* damaged ID close to a logged sensor's: near_id, near_chips */
 
 typedef struct {
     uint32_t ms;
@@ -153,6 +159,8 @@ typedef struct {
     uint8_t  lqi;
     int32_t  freq_off_hz;
     uint8_t  status;          /* tpms_ford_status_t */
+    uint8_t  near_chips;      /* RADIO_CAP_NEAR: chip errors against near_id's first 64 chips */
+    uint32_t near_id;
     uint8_t  len;
     uint8_t  data[RADIO_CAPTURE_MAX];
 } radio_capture_t;

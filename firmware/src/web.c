@@ -399,6 +399,11 @@ static esp_err_t h_pkts(httpd_req_t *req)
         const radio_capture_t *c = &fl[i];
         uint32_t id;
         bool has_id = radio_capture_id(c, &id);
+        bool near_id = !has_id && (c->flags & RADIO_CAP_NEAR);
+        if (near_id) {
+            id = c->near_id;
+            has_id = true;
+        }
         if (filter) {
             bool near = false;
             if (!has_id)
@@ -412,10 +417,12 @@ static esp_err_t h_pkts(httpd_req_t *req)
         char ids[10] = "", hex[2 * RADIO_CAPTURE_MAX + 1] = "";
         if (has_id) snprintf(ids, sizeof(ids), "%08x", (unsigned)id);
         for (int k = 0; k < c->len; k++) sprintf(hex + 2 * k, "%02x", c->data[k]);
-        jp(&j, "%s[%u,%d,%d,%d,%u,%u,%u,%d,%d,\"%s\",\"%s\"]", first ? "" : ",", (unsigned)c->ms, c->rssi_dbm,
+        jp(&j, "%s[%u,%d,%d,%d,%u,%u,%u,%d,%d,\"%s\",\"%s\"", first ? "" : ",", (unsigned)c->ms, c->rssi_dbm,
            c->noise_dbm, (int)c->freq_off_hz, c->lqi, c->status,
-           (c->flags & (RADIO_CAP_RESTARTED | RADIO_CAP_ABORTED)) | (c->quality ? RADIO_PKT_QUALITY : 0), pairs,
-           bad ? __builtin_ctzll(bad) : -1, ids, hex);
+           (c->flags & (RADIO_CAP_RESTARTED | RADIO_CAP_ABORTED | RADIO_CAP_NEAR)) |
+               (c->quality ? RADIO_PKT_QUALITY : 0),
+           pairs, bad ? __builtin_ctzll(bad) : -1, ids, hex);
+        jp(&j, near_id ? ",%u]" : "]", c->near_chips);  /* near: chip errors in the ID */
         first = false;
         err = jflush(req, &j, 160);
     }

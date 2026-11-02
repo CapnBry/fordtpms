@@ -436,7 +436,7 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
           <tbody id="pk-rows"></tbody>
         </table>
       </div>
-      <div class="m-note">The board keeps the last 128 decoded packets of all sensors, and up to 48 failed payloads that were probably sensor packets: Manchester-clean but bad checksum or flags, few damaged pairs, a clean ID, or strong and within 3&nbsp;s of a decoded packet. Red rows are failures with this ID, or with a damaged ID close to this sensor's packets. <i>early abort @n</i> = cut at bad pair n (the receiver went straight back to sync search); <i>after abort</i> = decoded right after one. RAM only: cleared on reboot.</div>
+      <div class="m-note">The board keeps the last 128 decoded packets of all sensors, and up to 48 failed payloads that were probably sensor packets: Manchester-clean but bad checksum or flags, few damaged pairs, a clean ID, a damaged ID within 12 of its 64 chips of a logged sensor's (<i>ID n/64 chips off</i>), or strong and within 3&nbsp;s of a decoded packet. Red rows are failures with this ID or one close to it, or with a damaged ID within 3&nbsp;s of this sensor's packets. <i>early abort @n</i> = cut at bad pair n (the receiver went straight back to sync search); <i>after abort</i> = decoded right after one. RAM only: cleared on reboot.</div>
       <div class="m-err" id="pk-err"></div>
     </div>
     <div class="m-foot">
@@ -968,7 +968,7 @@ const kHz = hz => (hz / 1000).toFixed(1);
 function pkRender(d) {
   const rows = [];
   d.p.forEach(([ms, rssi, noise, foff, afc, lqi, code, fl]) => rows.push({ ms, rssi, noise, foff, afc, lqi, fl, ok: true, ...pkCode(code) }));
-  d.f.forEach(([ms, rssi, noise, foff, lqi, st, fl, pairs, firstBad, id, hex]) => rows.push({ ms, rssi, noise, foff, lqi, st, fl, pairs, firstBad, id, hex, ok: false }));
+  d.f.forEach(([ms, rssi, noise, foff, lqi, st, fl, pairs, firstBad, id, hex, chips]) => rows.push({ ms, rssi, noise, foff, lqi, st, fl, pairs, firstBad, id, hex, chips, ok: false }));
   rows.sort((a, b) => b.ms - a.ms);
   const tb = $("pk-rows");
   tb.innerHTML = "";
@@ -998,7 +998,7 @@ function pkRender(d) {
     } else {
       const what = (r.fl & 2 ? `early abort @${r.firstBad}` : PK_ST[r.st] || "?") +
         (r.pairs && r.pairs < 64 && !(r.fl & 2) ? ` (${r.pairs} pairs)` : r.firstBad >= 0 && !(r.fl & 2) ? ` @${r.firstBad}` : "") +
-        (r.id ? "" : " \u00b7 ID damaged");
+        (r.fl & 16 ? ` \u00b7 ID ${r.chips}/64 chips off` : r.id ? "" : " \u00b7 ID damaged");
       const td = cell(tr, what + "  ", "l"); td.colSpan = 3;
       const hx = document.createElement("span"); hx.className = "hex"; hx.textContent = r.hex;
       td.appendChild(hx);
