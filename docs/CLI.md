@@ -157,10 +157,13 @@ not deleted.
 ## wifi
 
 ```
-wifi
+wifi [sleep on|off | tx <dBm>|default]
 ```
 
-Network status. Settings come from `firmware/src/wifi_config.h` at build time
+Network status. `wifi sleep on|off` sets modem power saving. `wifi tx 2..20`
+caps the Wi-Fi transmit power in dBm, and `wifi tx default` goes back to the
+driver's limit (18 dBm on the ESP32 board). Both are saved, and both are also in the web
+UI's Radio dialog. Settings come from `firmware/src/wifi_config.h` at build time
 (see the [firmware README](../firmware/README.md#wi-fi-web-ui-and-mqtt)).
 
 ```
@@ -172,6 +175,8 @@ ip            192.168.2.136
 ap rssi       -44 dBm
 web ui        http://192.168.2.136/  (1 live clients)
 reconnects    0
+sleep         off
+tx power      default, limit 18.00 dBm
 time          2026-10-14 21:37:29
 mqtt          mqtt://mqtt.lan:1883 connected, 2 published, 1 connects
 ```
@@ -181,6 +186,8 @@ mqtt          mqtt://mqtt.lan:1883 connected, 2 published, 1 connects
 | `state` | `connecting` until associated with an IP address. Retries back off from 1 s to 30 s |
 | `web ui` | URL and number of open WebSocket connections (browser tabs) |
 | `reconnects` | Wi-Fi drops since boot |
+| `sleep` | Modem power saving on or off |
+| `tx power` | The saved limit (`default` if none) and the driver's limit now. The chip rounds a setting down to its next step, so the two can differ |
 | `time` | Local time from NTP (`TIME_ZONE`), or `not synced` |
 | `mqtt` | Broker, state, readings published, and connections since boot |
 

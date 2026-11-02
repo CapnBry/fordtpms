@@ -23,6 +23,7 @@ static volatile bool s_connected;
 static uint32_t s_reconnects;
 static bool s_services_started;
 static bool s_powersave, s_started;
+static int s_tx_dbm;               /* 0: driver default */
 
 #define RETRY_MIN_MS 1000
 #define RETRY_MAX_MS 30000
@@ -108,6 +109,7 @@ esp_err_t net_init(void)
     ESP_ERROR_CHECK(esp_wifi_start());
     s_started = true;
     net_set_powersave(s_powersave);
+    net_set_tx_power(s_tx_dbm);
     ESP_LOGI(TAG, "connecting to \"%s\"", WIFI_SSID);
     return ESP_OK;
 }
@@ -122,6 +124,29 @@ void net_set_powersave(bool on)
 bool net_powersave(void)
 {
     return s_powersave;
+}
+
+void net_set_tx_power(int dbm)
+{
+    if (dbm != 0 && dbm < NET_TX_DBM_MIN) dbm = NET_TX_DBM_MIN;
+    if (dbm > NET_TX_DBM_MAX) dbm = NET_TX_DBM_MAX;
+    s_tx_dbm = dbm;
+    if (!s_started) return;
+    /* 0.25 dBm units; 84 (21 dBm) is the driver's own maximum and default. */
+    esp_err_t err = esp_wifi_set_max_tx_power((int8_t)(dbm ? dbm * 4 : 84));
+    if (err != ESP_OK) ESP_LOGW(TAG, "set TX power %d dBm: %s", dbm, esp_err_to_name(err));
+}
+
+int net_tx_power(void)
+{
+    return s_tx_dbm;
+}
+
+int net_tx_power_actual(void)
+{
+    int8_t q = 0;
+    if (!s_started || esp_wifi_get_max_tx_power(&q) != ESP_OK) return 0;
+    return q;
 }
 
 void net_get_status(net_status_t *out)

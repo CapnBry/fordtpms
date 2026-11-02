@@ -176,8 +176,18 @@ static int cmd_wifi(int argc, char **argv)
         printf("wifi sleep %s (saved)\n", net_powersave() ? "on" : "off");
         return 0;
     }
+    if (argc == 3 && !strcmp(argv[1], "tx")) {
+        int dbm = !strcmp(argv[2], "default") ? 0 : atoi(argv[2]);
+        if (dbm != 0 && (dbm < NET_TX_DBM_MIN || dbm > NET_TX_DBM_MAX)) {
+            printf("tx must be %d..%d dBm or default\n", NET_TX_DBM_MIN, NET_TX_DBM_MAX);
+            return 1;
+        }
+        app_set_wifi_tx(dbm);
+        printf("wifi tx %s (saved), limit now %.2f dBm\n", dbm ? argv[2] : "default", net_tx_power_actual() / 4.0);
+        return 0;
+    }
     if (argc > 1) {
-        printf("usage: wifi [sleep on|off]\n");
+        printf("usage: wifi [sleep on|off | tx <dBm>|default]\n");
         return 1;
     }
     net_status_t ns;
@@ -198,6 +208,8 @@ static int cmd_wifi(int argc, char **argv)
     }
     printf("reconnects    %u\n", (unsigned)ns.reconnects);
     printf("sleep         %s\n", net_powersave() ? "on (modem power saving)" : "off");
+    if (net_tx_power()) printf("tx power      %d dBm set, limit %.2f dBm\n", net_tx_power(), net_tx_power_actual() / 4.0);
+    else printf("tx power      default, limit %.2f dBm\n", net_tx_power_actual() / 4.0);
     char t[24];
     net_fmt_time(t, sizeof(t), net_wall_time(0));
     printf("time          %s\n", t[0] ? t : "not synced");
@@ -623,8 +635,8 @@ esp_err_t cli_start(void)
          .hint = "[clear]", .func = cmd_sensors},
         {.command = "tires", .help = "Show or assign sensor IDs to wheels (only assigned IDs go to MQTT)",
          .hint = "[fl|fr|rl|rr <id|clear>]", .func = cmd_tires},
-        {.command = "wifi", .help = "Wi-Fi, web UI, time and MQTT status. 'wifi sleep on|off' sets modem power saving (saved)",
-         .hint = "[sleep on|off]", .func = cmd_wifi},
+        {.command = "wifi", .help = "Wi-Fi, web UI, time and MQTT status. 'wifi sleep on|off' sets modem power saving, 'wifi tx <2-20>|default' the TX power limit in dBm (both saved)",
+         .hint = "[sleep on|off | tx <dBm>|default]", .func = cmd_wifi},
         {.command = "radio",
          .help = "Show or set radio (saved): radio freq 315.0 bw 83.3 sync 5556 bitrate 19231 drc 1 | defaults\n"
                  "  drc: data rate offset compensation 0 off, 1 +/-3.125%, 2 +/-6.25%, 3 +/-12.5% (CC1101)\n"

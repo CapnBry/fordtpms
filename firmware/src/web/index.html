@@ -462,8 +462,9 @@ tr.fresh td { background: #2a0805; animation: fresh 3s ease-out forwards; }
       <div class="field"><label for="r-drc">Rate tracking</label><select id="r-drc">
         <option value="0">off</option><option value="1">&plusmn;3.125 %</option><option value="2">&plusmn;6.25 %</option>
         <option value="3">&plusmn;12.5 %</option></select><span class="hint">CC1101</span></div>
+      <div class="field"><label for="r-wifi-tx">Wi-Fi power</label><input id="r-wifi-tx" type="range" min="2" max="20" step="1"><span class="hint" id="r-wifi-tx-v"></span></div>
       <div class="field"><label for="r-wifi-ps">Wi-Fi sleep</label><span class="afc"><input id="r-wifi-ps" type="checkbox"><span>modem power saving</span></span></div>
-      <div class="m-note">Same settings as the <b>radio</b> CLI command. <span id="r-limits"></span> Changes apply immediately and survive reboots. <i>Auto-tune</i> averages the frequency offset of received packets and retunes 3&nbsp;s after a burst; the offset is not saved and starts again at 0 after a reboot or a new frequency. <i>Apply</i> adds it to the frequency. <i>Wi-Fi sleep</i> saves power but can make the web UI and MQTT slower or drop on a weak link; <i>Defaults</i> leaves it as is.</div>
+      <div class="m-note">Same settings as the <b>radio</b> CLI command. <span id="r-limits"></span> Changes apply immediately and survive reboots. <i>Auto-tune</i> averages the frequency offset of received packets and retunes 3&nbsp;s after a burst; the offset is not saved and starts again at 0 after a reboot or a new frequency. <i>Apply</i> adds it to the frequency. <i>Wi-Fi power</i> caps the transmit power (2&ndash;20&nbsp;dBm; the chip rounds down to its next step); lower draws less current but weakens the link. <i>Wi-Fi sleep</i> saves power but can make the web UI and MQTT slower or drop on a weak link. <i>Defaults</i> leaves both as they are.</div>
       <div class="m-err" id="r-err"></div>
     </div>
     <div class="m-foot">
@@ -1079,14 +1080,29 @@ function openRadio() {
   setRadio(status);
   $("r-afc").checked = !!(status.afc && status.afc.on);
   $("r-wifi-ps").checked = !!status.wifi_ps;
+  /* wifi_tx: the saved limit (0 = driver default); wifi_txq: the driver's limit in 0.25 dBm */
+  const txq = status.wifi_txq || 0;
+  $("r-wifi-tx").value = status.wifi_tx || Math.min(20, Math.round(txq / 4)) || 20;
+  wifiTxDirty = false;
+  wifiTxPaint();
   afcPaint(status.afc);
   msg("r-err", "");
   $("dlg-radio").showModal();
 }
 $("open-radio").addEventListener("click", openRadio);
+let wifiTxDirty = false;   /* only an untouched slider leaves the driver default alone */
+function wifiTxPaint() {
+  const set = +$("r-wifi-tx").value, txq = status && status.wifi_txq;
+  let t = `${set} dBm`;
+  if (!wifiTxDirty && status && !status.wifi_tx) t += " \u00b7 default";
+  else if (!wifiTxDirty && txq && txq / 4 !== set) t += ` \u00b7 ${(txq / 4).toFixed(2)}`;
+  $("r-wifi-tx-v").textContent = t;
+}
+$("r-wifi-tx").addEventListener("input", () => { wifiTxDirty = true; wifiTxPaint(); });
 $("r-save").addEventListener("click", () => {
   if (!$("f-radio").reportValidity()) return;
-  run("r-err", () => post("/api/radio", { freq: $("r-freq").value, bw: $("r-bw").value, sync: $("r-sync").value, bitrate: $("r-bitrate").value, drc: $("r-drc").value, afc: $("r-afc").checked ? 1 : 0, wifi_ps: $("r-wifi-ps").checked ? 1 : 0 }), $("dlg-radio"));
+  run("r-err", () => post("/api/radio", { freq: $("r-freq").value, bw: $("r-bw").value, sync: $("r-sync").value, bitrate: $("r-bitrate").value, drc: $("r-drc").value, afc: $("r-afc").checked ? 1 : 0, wifi_ps: $("r-wifi-ps").checked ? 1 : 0,
+    ...(wifiTxDirty ? { wifi_tx: $("r-wifi-tx").value } : {}) }), $("dlg-radio"));
 });
 $("r-defaults").addEventListener("click", () => run("r-err", async () => {
   await post("/api/radio", { defaults: 1 });

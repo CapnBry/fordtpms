@@ -149,9 +149,10 @@ static void json_status(jbuf_t *j, bool with_sensors)
     }
     jp(j, "],");
     jp(j, "\"ids\":%d,\"gen\":%u,\"heap\":%u,\"wifi_rssi\":%d,\"ip\":\"%s\",\"host\":\"%s\","
-          "\"wifi_ps\":%s,\"mqtt\":%d,\"mqtt_pub\":%u,\"clients\":%d",
+          "\"wifi_ps\":%s,\"wifi_tx\":%d,\"wifi_txq\":%d,\"mqtt\":%d,\"mqtt_pub\":%u,\"clients\":%d",
        sensors_count(), (unsigned)sensors_generation(), (unsigned)esp_get_free_heap_size(), ns.rssi_dbm,
-       ns.ip, ns.hostname, net_powersave() ? "true" : "false", ms.enabled ? (ms.connected ? 1 : 0) : -1, (unsigned)ms.published, web_client_count());
+       ns.ip, ns.hostname, net_powersave() ? "true" : "false", net_tx_power(), net_tx_power_actual(),
+       ms.enabled ? (ms.connected ? 1 : 0) : -1, (unsigned)ms.published, web_client_count());
     /* Which build is running: elf is the first 8 hex digits of the ELF's SHA-256 (matches
      * sha256sum .pio/build/<env>/firmware.elf). ver is from git describe when CMake last
      * configured, so it can lag. probation: a new OTA image that isn't confirmed yet. */
@@ -461,7 +462,7 @@ static esp_err_t reply(httpd_req_t *req, const char *err)
 }
 
 /* POST /api/radio: freq (MHz) bw (kHz) sync (5556|aaa9|5555) bitrate drc (0-3) afc (0|1) wifi_ps (0|1)
- * | defaults=1 (radio only; wifi_ps is kept) */
+ * wifi_tx (dBm 2-20, 0 = driver default) | defaults=1 (radio only; wifi_ps and wifi_tx are kept) */
 static esp_err_t h_radio(httpd_req_t *req)
 {
     char form[256], v[24];
@@ -488,6 +489,7 @@ static esp_err_t h_radio(httpd_req_t *req)
         }
     }
     if (form_get(form, "wifi_ps", v, sizeof(v))) app_set_wifi_ps(atoi(v) != 0);
+    if (form_get(form, "wifi_tx", v, sizeof(v))) app_set_wifi_tx(atoi(v));
     int afc = form_get(form, "defaults", v, sizeof(v)) ? 1 : form_get(form, "afc", v, sizeof(v)) ? atoi(v) != 0 : -1;
     esp_err_t err = app_set_radio(&c);
     if (afc >= 0 && (err == ESP_OK || err == ESP_ERR_INVALID_STATE)) app_set_afc(afc);

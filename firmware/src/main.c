@@ -95,6 +95,13 @@ void app_set_wifi_ps(bool on)
     settings_save("wifi_ps", &v, sizeof(v));
 }
 
+void app_set_wifi_tx(int dbm)
+{
+    net_set_tx_power(dbm);
+    int8_t v = (int8_t)net_tx_power();
+    settings_save("wifi_tx", &v, sizeof(v));
+}
+
 void app_set_display(const display_settings_t *set)
 {
     display_set_settings(set);
@@ -190,6 +197,8 @@ void app_main(void)
     display_init();
     uint8_t wifi_ps;
     if (settings_load("wifi_ps", &wifi_ps, sizeof(wifi_ps))) net_set_powersave(wifi_ps);
+    int8_t wifi_tx;
+    if (settings_load("wifi_tx", &wifi_tx, sizeof(wifi_tx))) net_set_tx_power(wifi_tx);
     if (net_init() != ESP_OK) ESP_LOGE(TAG, "Wi-Fi init failed");
     led_start();
     ESP_ERROR_CHECK(cli_start());
