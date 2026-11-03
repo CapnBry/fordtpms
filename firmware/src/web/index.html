@@ -188,7 +188,8 @@ dialog[open] { animation: modal-in .18s ease-out; }
 .posbtn b { display: block; font: 12px ui-monospace, Consolas, monospace; letter-spacing: .1em; color: var(--dim); margin-top: 3px; }
 .posbtn.sel { background: var(--red); color: #2a0300; box-shadow: 0 0 14px #ff2414aa; }
 .posbtn.sel b { color: #2a0300; }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 150px; overflow-y: auto; }
+/* padding gives the selected chip's border and glow room inside the scroll box; the margin cancels it */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 162px; overflow-y: auto; padding: 6px; margin: -6px; }
 .chip { cursor: pointer; padding: 5px 8px; border-radius: 3px; background: #000; border: 1px solid #2a2a2e;
   font: 12px ui-monospace, Consolas, monospace; color: var(--amber); }
 .chip small { color: var(--dim); margin-left: 6px; }
