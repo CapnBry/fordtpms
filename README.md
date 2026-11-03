@@ -46,8 +46,19 @@ The OLED is optional. Wiring and pin choices are in
 
 ## Installation
 
-Requires [PlatformIO](https://platformio.org/install). To build and flash the
-ESP32 + CC1101 version over USB:
+Requires [PlatformIO](https://platformio.org/install).
+
+Wi-Fi and MQTT settings go in `firmware/src/wifi_config.h`.
+Copy the example template and fill in the network name, password and MQTT broker.
+Without this file the firmware builds with Wi-Fi off, leaving the OLED and
+serial console. An empty `MQTT_HOST` turns off only MQTT.
+
+
+```bash
+cp firmware/src/wifi_config.example.h firmware/src/wifi_config.h
+```
+
+To build and flash the ESP32 + CC1101 version over USB:
 
 ```bash
 cd firmware && pio run -e esp32-cc1101 -t upload
