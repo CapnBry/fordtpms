@@ -23,7 +23,7 @@ static volatile bool s_connected;
 static uint32_t s_reconnects;
 static bool s_services_started;
 static bool s_powersave, s_started;
-static int s_tx_dbm;               /* 0: driver default */
+static int s_tx_dbm;               /* 0: NET_TX_DBM_DEFAULT */
 
 #define RETRY_MIN_MS 1000
 #define RETRY_MAX_MS 30000
@@ -132,8 +132,8 @@ void net_set_tx_power(int dbm)
     if (dbm > NET_TX_DBM_MAX) dbm = NET_TX_DBM_MAX;
     s_tx_dbm = dbm;
     if (!s_started) return;
-    /* 0.25 dBm units; 84 (21 dBm) is the driver's own maximum and default. */
-    esp_err_t err = esp_wifi_set_max_tx_power((int8_t)(dbm ? dbm * 4 : 84));
+    /* 0.25 dBm units. */
+    esp_err_t err = esp_wifi_set_max_tx_power((int8_t)((dbm ? dbm : NET_TX_DBM_DEFAULT) * 4));
     if (err != ESP_OK) ESP_LOGW(TAG, "set TX power %d dBm: %s", dbm, esp_err_to_name(err));
 }
 

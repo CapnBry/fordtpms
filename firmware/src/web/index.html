@@ -1080,7 +1080,7 @@ function openRadio() {
   setRadio(status);
   $("r-afc").checked = !!(status.afc && status.afc.on);
   $("r-wifi-ps").checked = !!status.wifi_ps;
-  /* wifi_tx: the saved limit (0 = driver default); wifi_txq: the driver's limit in 0.25 dBm */
+  /* wifi_tx: the saved limit (0 = default, 15 dBm); wifi_txq: the driver's limit in 0.25 dBm */
   const txq = status.wifi_txq || 0;
   $("r-wifi-tx").value = status.wifi_tx || Math.min(20, Math.round(txq / 4)) || 20;
   wifiTxDirty = false;
@@ -1090,7 +1090,7 @@ function openRadio() {
   $("dlg-radio").showModal();
 }
 $("open-radio").addEventListener("click", openRadio);
-let wifiTxDirty = false;   /* only an untouched slider leaves the driver default alone */
+let wifiTxDirty = false;   /* only an untouched slider leaves the default alone */
 function wifiTxPaint() {
   const set = +$("r-wifi-tx").value, txq = status && status.wifi_txq;
   let t = `${set} dBm`;

@@ -26,11 +26,12 @@ esp_err_t net_init(void);
 void net_set_powersave(bool on);
 bool net_powersave(void);
 /* Wi-Fi TX power limit in dBm (NET_TX_DBM_MIN..MAX, rounded down by the
- * PHY to its next step), or 0 for the driver default; may be called before
- * net_init. net_tx_power() returns the setting, net_tx_power_actual() the
+ * PHY to its next step), or 0 for the default, NET_TX_DBM_DEFAULT; may be
+ * called before net_init. net_tx_power() returns the setting, net_tx_power_actual() the
  * driver's current limit in 0.25 dBm units (0 before Wi-Fi starts). */
 #define NET_TX_DBM_MIN 2
 #define NET_TX_DBM_MAX 20
+#define NET_TX_DBM_DEFAULT 15
 void net_set_tx_power(int dbm);
 int net_tx_power(void);
 int net_tx_power_actual(void);

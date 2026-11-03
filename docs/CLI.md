@@ -176,7 +176,7 @@ ap rssi       -44 dBm
 web ui        http://192.168.2.136/  (1 live clients)
 reconnects    0
 sleep         off
-tx power      default, limit 18.00 dBm
+tx power      default, limit 15.00 dBm
 time          2026-10-14 21:37:29
 mqtt          mqtt://mqtt.lan:1883 connected, 2 published, 1 connects
 ```
@@ -187,7 +187,7 @@ mqtt          mqtt://mqtt.lan:1883 connected, 2 published, 1 connects
 | `web ui` | URL and number of open WebSocket connections (browser tabs) |
 | `reconnects` | Wi-Fi drops since boot |
 | `sleep` | Modem power saving on or off |
-| `tx power` | The saved limit (`default` if none) and the driver's limit now. The chip rounds a setting down to its next step, so the two can differ |
+| `tx power` | The saved limit (`default` if none: 15 dBm) and the driver's limit now. The chip rounds a setting down to its next step, so the two can differ |
 | `time` | Local time from NTP (`TIME_ZONE`), or `not synced` |
 | `mqtt` | Broker, state, readings published, and connections since boot |
 

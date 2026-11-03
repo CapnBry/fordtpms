@@ -349,9 +349,9 @@ doesn't matter on USB power; on battery, go back to `WIFI_PS_MIN_MODEM`.
 
 `wifi tx <dBm>` (or the *Wi-Fi power* slider in the web UI's Radio dialog)
 caps the transmit power at 2–20 dBm through `esp_wifi_set_max_tx_power`. The
-setting is saved in NVS as `wifi_tx`; unset (`wifi tx default`), the driver's
-limit applies: 18 dBm on the ESP32 + CC1101 board, which is also its ceiling
-(20 reads back as 18). The chip rounds down to its next power step, e.g.
+setting is saved in NVS as `wifi_tx`; unset (`wifi tx default`), the limit is
+15 dBm (`NET_TX_DBM_DEFAULT` in net.h). The ESP32 + CC1101 board's ceiling is
+18 dBm (20 reads back as 18). The chip rounds down to its next power step, e.g.
 11 dBm gives 9.5 dBm; the CLI and the slider show the resulting limit.
 Lower power draws less peak current, which helps a marginal supply, at the
 cost of link margin. `/api/radio wifi_tx=<dBm>` sets it (0 = default); the
